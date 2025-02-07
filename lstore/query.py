@@ -1,6 +1,6 @@
 from lstore.table import Table, Record
 from lstore.index import Index
-
+from lstore.config import SCHEMA_ENCODING_COLUMN
 
 class Query:
     """
@@ -30,8 +30,15 @@ class Query:
     # Returns False if insert fails for whatever reason
     """
     def insert(self, *columns):
-        schema_encoding = '0' * self.table.num_columns
-        pass
+        """
+        Insert a record with specified columns
+        """
+        # Check if key exists
+        key_col = columns[self.table.key]
+        if self.table.index.indices[self.table.key] and key_col in self.table.index.indices[self.table.key]:
+            return False
+
+        return self.table.insert_record(*columns)
 
     
     """
@@ -44,7 +51,31 @@ class Query:
     # Assume that select will never be called on a key that doesn't exist
     """
     def select(self, search_key, search_key_index, projected_columns_index):
-        pass
+        """
+        Read matching record with specified search key
+        """
+        # Check if searching on key column and index exists
+        if search_key_index == self.table.key and self.table.index.indices[self.table.key]:
+            rid = self.table.index.indices[self.table.key].get(search_key)
+            if rid is None:
+                return False
+        else:
+            return False  # For milestone 1, only support search on primary key
+
+        # Get record location
+        page_range_idx, offset = self.table.page_directory[rid]
+        page_range = self.table.base_pages[page_range_idx]
+
+        # Read all columns
+        record_columns = []
+        for i in range(self.table.num_columns):
+            if projected_columns_index[i] == 1:
+                value = page_range[i + 4].read(offset * 8)  # +4 to skip metadata columns
+                record_columns.append(value)
+            else:
+                record_columns.append(None)
+
+        return [Record(rid=rid, key=search_key, columns=record_columns)]
 
     
     """
@@ -67,7 +98,31 @@ class Query:
     # Returns False if no records exist with given key or if the target record cannot be accessed due to 2PL locking
     """
     def update(self, primary_key, *columns):
-        pass
+        """
+        Update a record with specified key and columns
+        """
+        # First locate the record
+        records = self.select(primary_key, self.table.key, [1] * self.table.num_columns)
+        if not records:
+            return False
+
+        record = records[0]
+        rid = record.rid
+        page_range_idx, offset = self.table.page_directory[rid]
+        page_range = self.table.base_pages[page_range_idx]
+
+        # Update schema encoding
+        schema_encoding = 0
+        for i, value in enumerate(columns):
+            if value is not None:
+                schema_encoding |= (1 << i)
+                # Update the value
+                page_range[i + 4].data[offset * 8:(offset + 1) * 8] = value.to_bytes(8, 'big', signed=True)
+
+        # Update schema encoding column
+        page_range[SCHEMA_ENCODING_COLUMN].data[offset * 8:(offset + 1) * 8] = schema_encoding.to_bytes(8, 'big', signed=True)
+
+        return True
 
     
     """
@@ -79,7 +134,22 @@ class Query:
     # Returns False if no record exists in the given range
     """
     def sum(self, start_range, end_range, aggregate_column_index):
-        pass
+        """
+        Sum values in a column within key range
+        """
+        sum_value = 0
+        found_records = False
+
+        # Scan through all records in range
+        if self.table.index.indices[self.table.key]:
+            for key in range(start_range, end_range + 1):
+                if key in self.table.index.indices[self.table.key]:
+                    records = self.select(key, self.table.key, [1] * self.table.num_columns)
+                    if records:
+                        found_records = True
+                        sum_value += records[0].columns[aggregate_column_index]
+
+        return sum_value if found_records else False
 
     
     """
