@@ -20,15 +20,19 @@ class Query:
     # Return False if record doesn't exist or is locked due to 2PL
     """
     def delete(self, primary_key):
-        rids = self.table.index.locate(primary_key, self.table.key)
+        rids = self.table.index.locate(self.table.key, primary_key)
         if not rids:
             return False  # No record found
 
         for rid in rids:
-            self.table.delete_record(primary_key)
-            self.table.index.remove(primary_key)  # Remove from index
+            self.table.delete_record(primary_key)  # Mark as deleted
+            if primary_key in self.table.index.indices[self.table.key]:
+                self.table.index.indices[self.table.key][primary_key].remove(rid)  # Remove RID from index
+                if not self.table.index.indices[self.table.key][primary_key]:  # If empty, remove key
+                    del self.table.index.indices[self.table.key][primary_key]
 
         return True
+
 
 
     
@@ -51,10 +55,12 @@ class Query:
         self.table.insert_record(*columns)
 
         # Update index for primary key
-        primary_key = columns[self.table.key_index]  # Assuming self.table.key_index holds PK index
-        if primary_key not in self.table.index.indices:
-            self.table.index.indices[primary_key] = []  # Initialize list if key doesn't exist
-        self.table.index.indices[primary_key].append(new_rid)  # Store RID for lookup
+        primary_key = columns[self.table.key]  # Assuming self.table.key holds PK index
+        if self.table.index.indices[self.table.key] is None:
+            self.table.index.create_index(self.table.key)  # Create index if it doesn't exist
+        if primary_key not in self.table.index.indices[self.table.key]:
+            self.table.index.indices[self.table.key][primary_key] = []
+        self.table.index.indices[self.table.key][primary_key].append(new_rid)  # Store RID for lookup
 
         return True
 
@@ -105,19 +111,16 @@ class Query:
     # Assume that select will never be called on a key that doesn't exist
     """
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version):
-        # Retrieve RID from index
-        rid = self.table.index.locate(search_key, search_key_index)
-        if not rid:
+        rids = self.table.index.locate(search_key_index, search_key)
+        if not rids:
             return False  # No matching record
 
-        # Follow lineage (indirection pointers) to get the requested version
-        version_rid = rid  # Start from base record
+        version_rid = rids[0]  # Extract first RID
         for _ in range(relative_version):
             record = self.table.get_record(version_rid)
             if record is None or record.indirection == 0:
                 return False  # No older version available
             version_rid = record.indirection  # Follow the indirection chain manually
-
 
         record = self.table.get_record(version_rid)
         if record is None:
@@ -125,6 +128,7 @@ class Query:
         # Manually apply column projection
         selected_columns = [record.columns[i] for i in range(len(projected_columns_index)) if projected_columns_index[i] == 1]
         return [selected_columns]
+
 
 
 
