@@ -2,12 +2,12 @@
 # NoNameDB
 
 ## Team
-- __Mason McLuckie__
-- __Nikolaj Pedersen__
 - __Aadhil Mubarak Syed__
 - __Jaynor Singon__
-- __Yukai Sun__
+- __Mason McLuckie__
+- __Nikolaj Pedersen__
 - __Victoria Ramos__
+- __Yukai Sun__
 
 ---
 
