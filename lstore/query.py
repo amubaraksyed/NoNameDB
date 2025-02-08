@@ -117,8 +117,13 @@ class Query:
             version_rid = record.indirection  # Follow the indirection chain manually
 
 
-        # Retrieve and return the record at the requested version
-        return self.table.get_record(version_rid, projected_columns_index)
+        record = self.table.get_record(version_rid)
+        if record is None:
+            return False
+        # Manually apply column projection
+        selected_columns = [record.columns[i] for i in range(len(projected_columns_index)) if projected_columns_index[i] == 1]
+        return [selected_columns]
+
 
 
     
@@ -181,7 +186,10 @@ class Query:
         for rid in rids:
             version_rid = rid
             for _ in range(relative_version):
-                version_rid = self.table.get_indirection(version_rid)
+                record = self.table.get_record(version_rid)
+                if record is None or record.indirection == 0:
+                    return False  # No older version available
+                version_rid = record.indirection  # Follow the indirection chain manually
                 if version_rid is None:
                     return False  # No older version available
 
