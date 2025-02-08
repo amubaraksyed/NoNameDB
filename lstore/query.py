@@ -111,9 +111,11 @@ class Query:
         # Follow lineage (indirection pointers) to get the requested version
         version_rid = rid  # Start from base record
         for _ in range(relative_version):
-            version_rid = self.table.get_indirection(version_rid)
-            if version_rid is None:
+            record = self.table.get_record(version_rid)
+            if record is None or record.indirection == 0:
                 return False  # No older version available
+            version_rid = record.indirection  # Follow the indirection chain manually
+
 
         # Retrieve and return the record at the requested version
         return self.table.get_record(version_rid, projected_columns_index)
@@ -183,7 +185,10 @@ class Query:
                 if version_rid is None:
                     return False  # No older version available
 
-            total_sum += self.table.get_column_value(version_rid, aggregate_column_index)
+            record = self.table.get_record(version_rid)
+            if record is not None:
+                total_sum += record.columns[aggregate_column_index]  # Extract column value manually
+
 
         return total_sum
 
