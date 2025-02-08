@@ -31,8 +31,8 @@ class Database():
         for table in self.tables:
             if table.name == name:
                 self.tables.remove(table)
-                return True
-        return False
+                return
+        print(f"Could not delete table {name}")
 
     
     """
@@ -42,4 +42,4 @@ class Database():
         for table in self.tables:
             if table.name == name:
                 return table
-        return None
+        raise Exception(f"Table {name} not found, could not get")
