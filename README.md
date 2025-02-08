@@ -6,6 +6,7 @@
 - __Nikolaj Pedersen__
 - __Aadhil Mubarak Syed__
 - __Jaynor Singon__
+- __Yukai Sun__
 - __Victoria Ramos__
 
 ---
