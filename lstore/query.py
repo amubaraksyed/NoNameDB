@@ -45,17 +45,19 @@ class Query:
         schema_encoding = '0' * self.table.num_columns  # Initialize schema encoding
 
         # Assign a new RID (Record ID)
-        new_rid = self.table.generate_new_rid()  
+        new_rid = self.table.generate_new_rid()
 
         # Insert into columnar storage
         self.table.insert_record(*columns)
 
-
         # Update index for primary key
-        primary_key = columns[self.table.key]  # Assuming self.table.key holds PK index
-        self.table.index.insert(primary_key, new_rid)
+        primary_key = columns[self.table.key_index]  # Assuming self.table.key_index holds PK index
+        if primary_key not in self.table.index.indices:
+            self.table.index.indices[primary_key] = []  # Initialize list if key doesn't exist
+        self.table.index.indices[primary_key].append(new_rid)  # Store RID for lookup
 
         return True
+
 
 
     
