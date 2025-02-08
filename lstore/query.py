@@ -25,7 +25,7 @@ class Query:
             return False  # No record found
 
         for rid in rids:
-            self.table.invalidate_record(rid)  # Mark record as deleted
+            self.table.delete_record(primary_key)
             self.table.index.remove(primary_key)  # Remove from index
 
         return True
@@ -48,7 +48,8 @@ class Query:
         new_rid = self.table.generate_new_rid()  
 
         # Insert into columnar storage
-        self.table.insert_record(new_rid, columns, schema_encoding)
+        self.table.insert_record(*columns)
+
 
         # Update index for primary key
         primary_key = columns[self.table.key]  # Assuming self.table.key holds PK index
@@ -76,10 +77,18 @@ class Query:
 
         results = []
         for rid in rids:
-            record = self.table.get_record(rid, projected_columns_index)
-            results.append(record)
+            record = self.table.get_record(rid)  # Fetch the full record
+            
+            if record is None:
+                continue  # Skip if record does not exist
 
-        return results
+            # Apply column projection
+            selected_columns = [record.columns[i] for i in range(len(projected_columns_index)) if projected_columns_index[i] == 1]
+            
+            results.append(selected_columns)  # Store only projected columns
+
+        return results if results else False  # Return records or False if none found
+
 
 
     
@@ -126,8 +135,7 @@ class Query:
         while len(columns) < self.table.num_columns:
             columns.append(None)  # Keep missing columns unchanged
 
-        new_rid = self.table.generate_new_rid()  # Create new tail record RID
-        self.table.update_record(rid, new_rid, columns)
+        self.table.update_record(primary_key, *columns)  # Match Table.update_record()'s signature
 
         return True
 
@@ -147,7 +155,7 @@ class Query:
         if not rids:
             return False  # No records in range
 
-        total_sum = sum(self.table.get_column_value(rid, aggregate_column_index) for rid in rids)
+        total_sum = sum(self.table.get_record(rid).columns[aggregate_column_index] for rid in rids)
         
         return total_sum
 
@@ -197,7 +205,7 @@ class Query:
 
         if r is not False:
             updated_columns = [None] * self.table.num_columns
-            updated_columns[column] = r[column] + 1
+            updated_columns[column] = r[0][column] + 1
             u = self.update(key, *updated_columns)
             return u
         return False
