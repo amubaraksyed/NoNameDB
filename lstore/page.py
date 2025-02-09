@@ -1,9 +1,12 @@
 class Page:
 
+    PAGE_SIZE = 4096  # 4KB page size
+    RECORD_SIZE = 8
+
     def __init__(self):
         self.num_records = 0
-        self.data = bytearray(4096)  # 4KB page size
-        self.max_records = 4096 // 8  # Each value is 8 bytes (64-bit integer)
+        self.data = bytearray(self.PAGE_SIZE)  
+        self.max_records = self.PAGE_SIZE // self.RECORD_SIZE  # Each value is 8 bytes (64-bit integer)
 
     def has_capacity(self):
         """
@@ -17,7 +20,7 @@ class Page:
         Returns the offset where the value was written
         """
         if not self.has_capacity():
-            return None
+            return -1
             
         offset = self.num_records * 8
         # Convert integer to bytes and write to page
@@ -30,6 +33,18 @@ class Page:
         """
         Reads the integer value at the given offset
         """
+        if offset < 0 or offset >= self.num_records * self.RECORD_SIZE:
+            return -1
+        
         value_bytes = self.data[offset:offset+8]
         return int.from_bytes(value_bytes, 'big', signed=True)
+    
+    def update(self, offset, value):
+        # update value by offset
+
+        if offset < 0 or offset >= self.num_records * self.RECORD_SIZE:
+            return False
+        
+        self.data[offset:offset + self.RECORD_SIZE] = value.to_bytes(self.RECORD_SIZE, 'big', signed=True)
+        return True
 
