@@ -1,25 +1,26 @@
 """
-A data structure holding indices for various columns of a table. Key column should be indexed by default, other columns can be indexed through this object. Indices are usually B-Trees, but other data structures can be used as well.
+A data structure holding indices for various columns of a table. Key column should be indexed by default, other columns can be indexed through this object. 
+Indices are implemented using Python dictionaries with multiple value lists for duplicate keys.
 """
 
 class Index:
 
     def __init__(self, table):
-        # One index for each table. All are empty initially.
+        # One index for each table. All our empty initially.
         self.indices = [None] * table.num_columns
         self.table = table
-        # Initialize index for key column
+        
+        # Create index on key column by default
         self.create_index(table.key)
 
     def locate(self, column, value):
         """
-        Returns the location of all records with the given value on column "column"
+        Returns the RIDs of all records with the given value on column "column"
         """
         if self.indices[column] is None:
             return []
             
-        # Return list of RIDs or empty list if value not found
-        return [self.indices[column].get(value, [])]
+        return self.indices[column].get(value, [])
 
     def locate_range(self, begin, end, column):
         """
@@ -31,10 +32,10 @@ class Index:
         rids = []
         index = self.indices[column]
         
-        # Scan through all values in range
+        # Collect all RIDs for values in range
         for value in range(begin, end + 1):
             if value in index:
-                rids.append(index[value])
+                rids.extend(index[value])
                 
         return rids
 
@@ -42,28 +43,45 @@ class Index:
         """
         Create index on specific column
         """
-        # Don't create index if it already exists
+        # Index already exists
         if self.indices[column_number] is not None:
             return
             
-        # Initialize new index
-        self.indices[column_number] = {}
+        # Create new index
+        index = {}
+        self.indices[column_number] = index
         
-        # If table has existing records, index them
-        for rid, (page_range_idx, offset) in self.table.page_directory.items():
-            # Read value from the column
-            page_range = self.table.base_pages[page_range_idx]
-            value = page_range[column_number + 4].read(offset * 8)  # +4 for metadata columns
-            
-            # Add to index
-            self.indices[column_number][value] = rid
+        # Scan table to build index
+        for rid in self.table.page_directory:
+            record = self.table.get_record(rid)
+            if record:
+                value = record.columns[column_number]
+                if value not in index:
+                    index[value] = []
+                index[value].append(rid)
 
     def drop_index(self, column_number):
         """
         Drop index of specific column
         """
-        # Cannot drop index on primary key
-        if column_number == self.table.key:
+        self.indices[column_number] = None
+
+    def update_index(self, column, old_value, new_value, rid):
+        """
+        Update index when a value changes
+        """
+        if self.indices[column] is None:
             return
             
-        self.indices[column_number] = None
+        index = self.indices[column]
+        
+        # Remove old value
+        if old_value in index and rid in index[old_value]:
+            index[old_value].remove(rid)
+            if not index[old_value]:  # Remove empty list
+                del index[old_value]
+                
+        # Add new value
+        if new_value not in index:
+            index[new_value] = []
+        index[new_value].append(rid)

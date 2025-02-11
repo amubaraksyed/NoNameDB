@@ -1,6 +1,6 @@
 from lstore.table import Table, Record
 from lstore.index import Index
-from lstore.config import SCHEMA_ENCODING_COLUMN
+
 
 class Query:
     """
@@ -21,7 +21,21 @@ class Query:
     # Return False if record doesn't exist or is locked due to 2PL
     """
     def delete(self, primary_key):
-        pass
+        """
+        # Delete a record with specified primary key
+        # Returns True upon successful deletion
+        # Return False if record doesn't exist or is locked due to 2PL
+        """
+        try:
+            # Find the record using the index
+            rids = self.table.index.locate(self.table.key, primary_key)
+            if not rids:
+                return False
+                
+            # Delete the first matching record
+            return self.table.delete_record(rids[0])
+        except:
+            return False
     
     
     """
@@ -31,14 +45,24 @@ class Query:
     """
     def insert(self, *columns):
         """
-        Insert a record with specified columns
+        # Insert a record with specified columns
+        # Return True upon successful insertion
+        # Returns False if insert fails for whatever reason
         """
-        # Check if key exists
-        key_col = columns[self.table.key]
-        if self.table.index.indices[self.table.key] and key_col in self.table.index.indices[self.table.key]:
+        try:
+            if len(columns) != self.table.num_columns:
+                return False
+                
+            # Insert the record and get its RID
+            rid = self.table.insert_record(columns[self.table.key], columns)
+            if rid is None:
+                return False
+                
+            # Add to index
+            self.table.index.indices[self.table.key][columns[self.table.key]] = [rid]
+            return True
+        except:
             return False
-
-        return self.table.insert_record(*columns)
 
     
     """
@@ -52,30 +76,39 @@ class Query:
     """
     def select(self, search_key, search_key_index, projected_columns_index):
         """
-        Read matching record with specified search key
+        # Read matching record with specified search key
+        # :param search_key: the value you want to search based on
+        # :param search_key_index: the column index you want to search based on
+        # :param projected_columns_index: what columns to return. array of 1 or 0 values.
+        # Returns a list of Record objects upon success
+        # Returns False if record locked by TPL
+        # Assume that select will never be called on a key that doesn't exist
         """
-        # Check if searching on key column and index exists
-        if search_key_index == self.table.key and self.table.index.indices[self.table.key]:
-            rid = self.table.index.indices[self.table.key].get(search_key)
-            if rid is None:
-                return False
-        else:
-            return False  # For milestone 1, only support search on primary key
-
-        # Get record location
-        page_range_idx, offset = self.table.page_directory[rid]
-        page_range = self.table.base_pages[page_range_idx]
-
-        # Read all columns
-        record_columns = []
-        for i in range(self.table.num_columns):
-            if projected_columns_index[i] == 1:
-                value = page_range[i + 4].read(offset * 8)  # +4 to skip metadata columns
-                record_columns.append(value)
-            else:
-                record_columns.append(None)
-
-        return [Record(rid=rid, key=search_key, columns=record_columns)]
+        try:
+            if len(projected_columns_index) != self.table.num_columns:
+                return []
+                
+            # Find records using index
+            rids = self.table.index.locate(search_key_index, search_key)
+            if not rids:
+                return []
+                
+            # Get the records
+            records = []
+            for rid in rids:
+                record = self.table.get_record(rid)
+                if record:
+                    # Filter columns based on projection
+                    projected_columns = []
+                    for i, include in enumerate(projected_columns_index):
+                        if include:
+                            projected_columns.append(record.columns[i])
+                    records.append(Record(record.rid, record.key, projected_columns))
+            
+            return records
+        except Exception as e:
+            print(f"Error in select: {e}")
+            return []
 
     
     """
@@ -99,30 +132,20 @@ class Query:
     """
     def update(self, primary_key, *columns):
         """
-        Update a record with specified key and columns
+        # Update a record with specified key and columns
+        # Returns True if update is successful
+        # Returns False if no records exist with given key or if the target record cannot be accessed due to 2PL locking
         """
-        # First locate the record
-        records = self.select(primary_key, self.table.key, [1] * self.table.num_columns)
-        if not records:
+        try:
+            # Find the record using the index
+            rids = self.table.index.locate(self.table.key, primary_key)
+            if not rids:
+                return False
+                
+            # Update the first matching record
+            return self.table.update_record(primary_key, rids[0], columns)
+        except:
             return False
-
-        record = records[0]
-        rid = record.rid
-        page_range_idx, offset = self.table.page_directory[rid]
-        page_range = self.table.base_pages[page_range_idx]
-
-        # Update schema encoding
-        schema_encoding = 0
-        for i, value in enumerate(columns):
-            if value is not None:
-                schema_encoding |= (1 << i)
-                # Update the value
-                page_range[i + 4].data[offset * 8:(offset + 1) * 8] = value.to_bytes(8, 'big', signed=True)
-
-        # Update schema encoding column
-        page_range[SCHEMA_ENCODING_COLUMN].data[offset * 8:(offset + 1) * 8] = schema_encoding.to_bytes(8, 'big', signed=True)
-
-        return True
 
     
     """
@@ -135,21 +158,28 @@ class Query:
     """
     def sum(self, start_range, end_range, aggregate_column_index):
         """
-        Sum values in a column within key range
+        :param start_range: int         # Start of the key range to aggregate 
+        :param end_range: int           # End of the key range to aggregate 
+        :param aggregate_column_index: int  # Index of desired column to aggregate
+        # Returns the summation of the given range upon success
+        # Returns False if no record exists in the given range
         """
-        sum_value = 0
-        found_records = False
-
-        # Scan through all records in range
-        if self.table.index.indices[self.table.key]:
-            for key in range(start_range, end_range + 1):
-                if key in self.table.index.indices[self.table.key]:
-                    records = self.select(key, self.table.key, [1] * self.table.num_columns)
-                    if records:
-                        found_records = True
-                        sum_value += records[0].columns[aggregate_column_index]
-
-        return sum_value if found_records else False
+        try:
+            # Get all records in range
+            rids = self.table.index.locate_range(start_range, end_range, self.table.key)
+            if not rids:
+                return False
+                
+            # Sum the specified column
+            total = 0
+            for rid in rids:
+                record = self.table.get_record(rid)
+                if record:
+                    total += record.columns[aggregate_column_index]
+            
+            return total
+        except:
+            return False
 
     
     """
