@@ -2,11 +2,7 @@ from lstore.index import Index
 from lstore.page import Page, PageRange
 from lstore.config import *
 from time import time
-
-INDIRECTION_COLUMN = 0
-RID_COLUMN = 1
-TIMESTAMP_COLUMN = 2
-SCHEMA_ENCODING_COLUMN = 3
+from config import *
 
 class Record:
     def __init__(self, rid, key, columns):
@@ -65,14 +61,14 @@ class Table:
         
         # Write metadata
         base_pages = page_range.base_pages[base_page_index]
-        base_pages[INDIRECTION_COLUMN].write(offset, rid)  # Initially points to itself
-        base_pages[RID_COLUMN].write(offset, rid)
-        base_pages[TIMESTAMP_COLUMN].write(offset, int(time()))
-        base_pages[SCHEMA_ENCODING_COLUMN].write(offset, 0)  # No updates yet
+        base_pages[INDIRECTION_COLUMN].write(rid)  # Initially points to itself
+        base_pages[RID_COLUMN].write(rid)
+        base_pages[TIMESTAMP_COLUMN].write(int(time()))
+        base_pages[SCHEMA_ENCODING_COLUMN].write(0)  # No updates yet
         
         # Write user data
         for i, value in enumerate(columns):
-            base_pages[i + 4].write(offset, value)  # +4 for metadata columns
+            base_pages[i + 4].write(value)  # +4 for metadata columns
         
         page_range.num_records += 1
         
@@ -85,55 +81,142 @@ class Table:
         
         return rid
     
-    def get_record(self, rid):
+    def get_record_version(self, rid, version):
+        """
+        Gets a specific version of a record:
+        version 0: latest version
+        version -1: next latest version
+        version -2: next next latest version
+        etc. until we reach base record
+        If requested version is older than available, returns the base record.
+        """
         if rid not in self.page_directory:
             return None
             
         page_range_idx, page_type, page_idx, offset = self.page_directory[rid]
-        if page_type != 'base':
-            return None
-            
         page_range = self.page_ranges[page_range_idx]
-        base_pages = page_range.base_pages[page_idx]
         
-        # Read values directly from base pages
+        # Start with base record
+        base_pages = page_range.base_pages[page_idx]
+        current_rid = rid
+        indirection_chain = []
+        
+        # First get the base record
+        base_indirection = base_pages[INDIRECTION_COLUMN].read(offset)
+        schema_encoding = base_pages[SCHEMA_ENCODING_COLUMN].read(offset)
+        
+        # If schema encoding is 0, this record has no updates
+        if schema_encoding == 0:
+            # Only base record exists
+            indirection_chain.append((base_pages, offset))
+        else:
+            # Record has updates, start with most recent tail record
+            current_rid = base_indirection  # Most recent tail record
+            
+            # Add tail records to chain from most recent to oldest
+            while current_rid != rid:  # Stop when we reach base record
+                if current_rid not in self.page_directory:
+                    break
+                    
+                page_range_idx, page_type, page_idx, offset = self.page_directory[current_rid]
+                current_pages = page_range.tail_pages[page_idx]
+                
+                # Add to chain
+                indirection_chain.append((current_pages, offset))
+                
+                # Move to previous version
+                current_rid = current_pages[INDIRECTION_COLUMN].read(offset)
+                
+            # Add base record at the end
+            indirection_chain.append((base_pages, offset))
+        
+        # Handle version selection
+        # Version 0 is latest, -1 is next latest, etc.
+        version_index = abs(version)
+        
+        # If requested version is older than available, return base record
+        if version_index >= len(indirection_chain):
+            version_index = len(indirection_chain) - 1  # Return base record
+            
+        # Get the requested version
+        pages, offset = indirection_chain[version_index]
+        
+        # Read values
         values = []
         for i in range(4, 4 + self.num_columns):  # Skip metadata columns
-            values.append(base_pages[i].read(offset))
+            values.append(pages[i].read(offset))
+            
         return Record(rid, values[self.key], values)
+
+    def get_record(self, rid):
+        """
+        Gets the most recent version of a record
+        """
+        # Get version 0 (latest version)
+        return self.get_record_version(rid, 0)
     
     def update_record(self, key, rid, columns):
         if rid not in self.page_directory:
             return False
             
         # Get the base record location
-        page_range_idx, page_type, page_idx, offset = self.page_directory[rid]
-        if page_type != 'base':
-            return False
-            
-        page_range = self.page_ranges[page_range_idx]
-        base_pages = page_range.base_pages[page_idx]
+        base_range_idx, _, base_page_idx, base_offset = self.page_directory[rid]
+        base_range = self.page_ranges[base_range_idx]
+        base_pages = base_range.base_pages[base_page_idx]
         
-        # Get current values for updating index if needed
+        # Get current values
         current_record = self.get_record(rid)
         if not current_record:
             return False
             
-        # Update schema encoding
-        old_schema = base_pages[SCHEMA_ENCODING_COLUMN].read(offset)
+        # Create new tail record
+        current_tail_pages = base_range.tail_pages[-1]
+        if not current_tail_pages[0].has_capacity():
+            base_range.create_new_tail_page()
+            current_tail_pages = base_range.tail_pages[-1]
+        
+        tail_offset = current_tail_pages[0].num_records
+        tail_rid = self.next_rid
+        self.next_rid += 1
+        
+        # Update page directory
+        self.page_directory[tail_rid] = (base_range_idx, 'tail', len(base_range.tail_pages) - 1, tail_offset)
+        
+        # Write tail record metadata
+        current_tail_pages[INDIRECTION_COLUMN].write(rid)  # Point to base record
+        current_tail_pages[RID_COLUMN].write(tail_rid)
+        current_tail_pages[TIMESTAMP_COLUMN].write(int(time()))
+        
+        # Calculate new schema encoding
+        old_schema = base_pages[SCHEMA_ENCODING_COLUMN].read(base_offset)
         new_schema = old_schema
         for i, value in enumerate(columns):
             if value is not None:
                 new_schema |= (1 << i)
-        base_pages[SCHEMA_ENCODING_COLUMN].write(offset, new_schema)
+        current_tail_pages[SCHEMA_ENCODING_COLUMN].write(new_schema)
         
-        # Write updated values directly to base pages
+        # Write user data and handle index updates
+        new_values = list(current_record.columns)  # Start with current values
         for i, value in enumerate(columns):
             if value is not None:
-                base_pages[i + 4].write(offset, value)  # +4 for metadata columns
-                # Update index if this is the key column
-                if i == self.key:
-                    self.index.update_index(self.key, current_record.columns[self.key], value, rid)
+                new_values[i] = value  # Update changed values
+                
+        # Write all values to tail record
+        for i, value in enumerate(new_values):
+            current_tail_pages[i + 4].write(value)
+            
+        # Update index if key changed
+        if columns[self.key] is not None:
+            self.index.update_index(self.key, current_record.columns[self.key], columns[self.key], rid)
+        
+        # Update base record to point to this new tail record
+        base_pages[INDIRECTION_COLUMN].write(tail_rid)
+        base_pages[SCHEMA_ENCODING_COLUMN].write(new_schema)
+
+        base_range.tail_pages[-1] = current_tail_pages
+        
+        # Increment number of records in the page range
+        base_range.num_records += 1
         
         return True
     

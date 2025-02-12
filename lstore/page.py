@@ -18,36 +18,34 @@ class Page:
         # Each value is 8 bytes (64-bit integer)
         return (self.num_records * RECORD_SIZE) < self.page_size
     
-    def write(self, offset, value):
+    def write(self, value):
         """
-        Writes a 64-bit integer value to the page at the given offset
-        Returns True if successful, False if offset is invalid
+        Writes a 64-bit integer value to the page
+        Returns True if successful, False if page is full
         """
-        if offset >= (self.page_size // RECORD_SIZE):
+        if not self.has_capacity():
             return False
             
         # Pack the 64-bit integer into 8 bytes
         packed_value = struct.pack('q', value)
         
-        # Write the bytes to the page at the specified offset
-        start_pos = offset * RECORD_SIZE
+        # Write the bytes to the page
+        start_pos = self.num_records * RECORD_SIZE
         self.data[start_pos:start_pos + RECORD_SIZE] = packed_value
         
-        # Update num_records if we're writing beyond current count
-        if offset >= self.num_records:
-            self.num_records = offset + 1
+        self.num_records += 1
         return True
     
-    def read(self, offset):
+    def read(self, index):
         """
-        Reads the value at the given offset
-        Returns None if offset is invalid
+        Reads the value at the given index
+        Returns None if index is invalid
         """
-        if offset >= self.num_records:
+        if index >= self.num_records:
             return None
             
-        # Read 8 bytes starting at offset * 8
-        start_pos = offset * RECORD_SIZE
+        # Read 8 bytes starting at index * 8
+        start_pos = index * RECORD_SIZE
         value_bytes = self.data[start_pos:start_pos + RECORD_SIZE]
         
         # Unpack the bytes into a 64-bit integer
