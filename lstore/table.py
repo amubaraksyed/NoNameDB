@@ -1,82 +1,69 @@
 from lstore.index import Index
-from lstore.page import Page
+from lstore.page import PageRange
 from time import time
-from lstore.config import INDIRECTION_COLUMN, RID_COLUMN, TIMESTAMP_COLUMN, SCHEMA_ENCODING_COLUMN
-
+import lstore.config as config
 
 class Record:
+    """
+    Record class to store a single record's data and metadata
+    """
+    def __init__(self, indirection, rid, timestamp, schema_encoding, key, columns):
+        self.indirection = indirection  # Points to the most recent version (tail record) of this record
+        self.rid = rid                  # Unique identifier for this record
+        self.timestamp = timestamp      # Time when this record was created/updated
+        self.schema_encoding = schema_encoding  # Bitmap showing which columns have been updated
+        self.key = key                  # Primary key value
+        self.columns = columns          # Actual data values
 
-    def __init__(self, rid, key, columns):
-        self.rid = rid
-        self.key = key
-        self.columns = columns
+    def __getitem__(self, column):
+        """
+        Allows array-like access to record columns
+        """
+        return self.columns[column]
+
+    def __str__(self):
+        """
+        String representation of the record for debugging
+        """
+        return f"Record(rid={self.rid}, key={self.key}, columns={self.columns})"
 
 class Table:
-
     """
+    Table class that manages all records and pages
     :param name: string         #Table name
-    :param num_columns: int     # Number of Columns: all columns are integer
-    :param key: int             # Index of table key in columns
+    :param num_columns: int     #Number of Columns: all columns are integer
+    :param key: int             #Index of table key in columns
     """
     def __init__(self, name, num_columns, key):
         self.name = name
         self.key = key
         self.num_columns = num_columns
-        self.page_directory = {}  # RID -> (page_range, base_page, offset)
-        self.index = Index(self)
-        
-        # Number of base records
-        self.num_records = 0
-        
-        # Create base pages for metadata columns and user columns
-        self.num_total_cols = num_columns + 4  # User columns + metadata columns
-        self.base_pages = []
-        self.create_new_page_range()
+        self.page_ranges = [PageRange(num_columns)]  # List of page ranges for this table
+        self.page_ranges_index = 0                   # Current page range index
+        self.page_directory = {}                     # Maps RID to record location
+        self.index = Index(self)                     # Index for faster record lookup
+        self.rid = 1                                 # Next available RID
 
-    def create_new_page_range(self):
+    def new_rid(self):
         """
-        Creates a new page range with pages for each column
+        Generates and returns a new unique RID
         """
-        page_range = []
-        for _ in range(self.num_total_cols):
-            page_range.append(Page())
-        self.base_pages.append(page_range)
-        return len(self.base_pages) - 1
+        self.rid += 1
+        return self.rid - 1
 
-    def insert_record(self, *columns):
+    def add_new_page_range(self):
         """
-        Insert a record with the given values
+        Creates a new page range when current one is full
         """
-        # Check if we need a new page range
-        current_page_range = self.base_pages[-1]
-        if not current_page_range[0].has_capacity():
-            self.create_new_page_range()
-            current_page_range = self.base_pages[-1]
-
-        rid = self.num_records
-        self.num_records += 1
-        
-        # Write metadata
-        page_range_index = len(self.base_pages) - 1
-        current_page_range[INDIRECTION_COLUMN].write(0)  # No updates yet
-        current_page_range[RID_COLUMN].write(rid)
-        current_page_range[TIMESTAMP_COLUMN].write(int(time()))
-        current_page_range[SCHEMA_ENCODING_COLUMN].write(0)  # No updates yet
-        
-        # Write user data
-        for i, value in enumerate(columns):
-            current_page_range[i + 4].write(value)
-            
-        # Update page directory
-        self.page_directory[rid] = (page_range_index, 0)  # Base page offset is 0
-        
-        # Update index
-        self.index.indices[self.key] = self.index.indices[self.key] or {}
-        self.index.indices[self.key][columns[self.key]] = rid
-        
-        return True
+        if self.page_ranges[-1].has_base_page_capacity(): return;
+    
+        self.page_ranges.append(PageRange(self.num_columns))
+        self.page_ranges_index += 1
 
     def __merge(self):
+        """
+        Merges tail records into base records for better read performance
+        TO BE IMPLEMENTED IN MILESTONE 2
+        """
         print("merge is happening")
         pass
- 

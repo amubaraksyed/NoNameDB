@@ -1,69 +1,125 @@
 """
-A data structure holding indices for various columns of a table. Key column should be indexed by default, other columns can be indexed through this object. Indices are usually B-Trees, but other data structures can be used as well.
+A data structure holding indices for various columns of a table. 
+The key column is indexed by default, other columns can be indexed through this object.
+Indices are implemented using B-Trees for efficient lookups.
 """
+from BTrees.OOBTree import OOBTree
+import lstore.config as config
 
 class Index:
-
+    """
+    Index class that manages B-Tree indices for table columns
+    """
     def __init__(self, table):
-        # One index for each table. All are empty initially.
-        self.indices = [None] * table.num_columns
-        self.table = table
-        # Initialize index for key column
-        self.create_index(table.key)
+        """
+        Initialize index structure for a table
+        :param table: Table     #The table this index belongs to
+        """
+        # Initialize indices array
+        self.indices = [None] * table.num_columns  # One index for each column
+        self.key = table.key                       # Primary key column index
+        
+        # Create primary key index
+        self.indices[self.key] = OOBTree()         # Initialize primary key index
+
+    def add(self, record):
+        """
+        Adds a record's values to all existing indices
+        :param record: list     #Record values including metadata
+        """
+        # Get RID
+        rid = record[config.RID_COLUMN]
+
+        for i, column_index in enumerate(self.indices):
+            # Check if index exists
+            if column_index is not None:
+                # Get key value
+                key = record[i + config.METADATA_COLUMNS]
+
+                # Store RIDs in a set to handle duplicate values
+                if key not in column_index:
+                    column_index[key] = set()
+                column_index[key].add(rid)
+
+    def delete(self, record):
+        """
+        Removes a record's values from all existing indices
+        :param record: list     #Record values including metadata
+        :raises: Exception if key not found in index
+        """
+        # Get RID
+        rid = record[config.RID_COLUMN]
+
+        # Remove from each index
+        for i, column_index in enumerate(self.indices):
+            # Check if index exists
+            if column_index is not None:
+                # Get key value
+                key = record[i + config.METADATA_COLUMNS]
+
+                # Remove RID from index
+                if key in column_index:
+                    # Remove RID from set
+                    column_index[key].remove(rid)
+
+                    # Clean up empty sets
+                    if not column_index[key]:
+                        del column_index[key]
+                else:
+                    raise Exception("Key not found in index")
 
     def locate(self, column, value):
         """
-        Returns the location of all records with the given value on column "column"
+        Finds all records with the given value in the specified column
+        :param column: int     #Index of the column to search
+        :param value: int      #Value to search for
+        :return: set          #Set of RIDs matching the search criteria, or None if not found
         """
-        if self.indices[column] is None:
-            return []
-            
-        # Return list of RIDs or empty list if value not found
-        return [self.indices[column].get(value, [])]
+        # Get index for column
+        tree = self.indices[column]
+
+        # Check if value exists
+        if value not in tree:
+            return None
+
+        # Return matching RIDs
+        return tree[value]
 
     def locate_range(self, begin, end, column):
         """
-        Returns the RIDs of all records with values in column "column" between "begin" and "end"
+        Finds all records with values in the specified range
+        :param begin: int     #Start of the range (inclusive)
+        :param end: int       #End of the range (inclusive)
+        :param column: int    #Index of the column to search
+        :return: set         #Set of RIDs within the range
         """
-        if self.indices[column] is None:
-            return []
-            
-        rids = []
-        index = self.indices[column]
-        
-        # Scan through all values in range
-        for value in range(begin, end + 1):
-            if value in index:
-                rids.append(index[value])
-                
-        return rids
+        # Get index for column
+        tree = self.indices[column]
+        matching_rids = set()
+
+        # Iterate through values in range
+        for key in tree.keys(begin, end):
+            matching_rids.update(tree[key])
+
+        return matching_rids if matching_rids else None
 
     def create_index(self, column_number):
         """
-        Create index on specific column
+        Creates a new index on the specified column
+        :param column_number: int     #Index of the column to create index for
         """
-        # Don't create index if it already exists
+        # Check if index already exists
         if self.indices[column_number] is not None:
             return
-            
-        # Initialize new index
-        self.indices[column_number] = {}
-        
-        # If table has existing records, index them
-        for rid, (page_range_idx, offset) in self.table.page_directory.items():
-            # Read value from the column
-            page_range = self.table.base_pages[page_range_idx]
-            value = page_range[column_number + 4].read(offset * 8)  # +4 for metadata columns
-            
-            # Add to index
-            self.indices[column_number][value] = rid
+
+        # Create new B-Tree index
+        self.indices[column_number] = OOBTree()
 
     def drop_index(self, column_number):
         """
-        Drop index of specific column
+        Removes the index on the specified column
+        :param column_number: int     #Index of the column to drop index for
         """
-        # Cannot drop index on primary key
-        if column_number == self.table.key:
-            return
-            
-        self.indices[column_number] = None
+        # Cannot drop primary key index
+        if column_number != self.key:
+            self.indices[column_number] = None
