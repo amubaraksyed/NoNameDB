@@ -21,7 +21,27 @@ class Query:
     # Return False if record doesn't exist or is locked due to 2PL
     """
     def delete(self, primary_key):
-        pass
+        """
+        Delete record with specified primary key
+        Returns True upon successful deletion
+        Returns False if record doesn't exist
+        """
+        # First locate the record
+        records = self.select(primary_key, self.table.key, [1] * self.table.num_columns)
+        if not records:
+            return False
+
+        record = records[0]
+        rid = record.rid
+
+        # Remove from index
+        if self.table.index.indices[self.table.key]:
+            del self.table.index.indices[self.table.key][primary_key]
+
+        # Remove from page directory
+        del self.table.page_directory[rid]
+
+        return True
     
     
     """
@@ -89,6 +109,9 @@ class Query:
     # Assume that select will never be called on a key that doesn't exist
     """
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version):
+        """
+        Not implemented for milestone 1
+        """
         pass
 
     
@@ -162,6 +185,9 @@ class Query:
     # Returns False if no record exists in the given range
     """
     def sum_version(self, start_range, end_range, aggregate_column_index, relative_version):
+        """
+        Not implemented for milestone 1
+        """
         pass
 
     
@@ -177,7 +203,7 @@ class Query:
         r = self.select(key, self.table.key, [1] * self.table.num_columns)[0]
         if r is not False:
             updated_columns = [None] * self.table.num_columns
-            updated_columns[column] = r[column] + 1
+            updated_columns[column] = r.columns[column] + 1
             u = self.update(key, *updated_columns)
             return u
         return False
