@@ -2,7 +2,6 @@ from lstore.index import Index
 from lstore.page import Page, PageRange
 from lstore.config import *
 from time import time
-from config import *
 
 class Record:
     def __init__(self, rid, key, columns):
