@@ -36,3 +36,7 @@ ENV/
 *.db
 *.log
 test_data/ 
+
+# Database Files
+ECS165/
+Lineage_DB/
