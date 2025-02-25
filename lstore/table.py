@@ -545,7 +545,6 @@ class Table:
 
         print("Merge completed successfully!")
 
-
     def get_page_range_for_rid(self, rid: int) -> int:
         """
         Determines which page range a RID belongs to
