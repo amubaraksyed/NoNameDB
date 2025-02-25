@@ -1,64 +1,51 @@
 from lstore.table import Table
-import lstore.config as config
+
+import os, shutil
 
 class Database:
-    """
-    Database class that manages all tables
-    """
     def __init__(self):
-        self.tables = {}        # Dictionary mapping table names to Table objects
+        self.tables = {}  # Initialize tables as a dictionary
+        self.path = "./Lineage_DB/"
 
-    def open(self, path):
-        """
-        Opens a database from a file path
-        :param path: string     #Path to the database file
-        To be implemented in milestone 2
-        """
-        pass
+    def open(self, currentpath):
+        self.path = currentpath
+        os.makedirs(self.path, exist_ok=True)
+        for name in os.listdir(self.path):
+            if os.path.isdir(os.path.join(self.path,name)):
+                self.tables[name] = Table(name, 0, 0, self.path)
+                self.tables[name].restart_table()
 
     def close(self):
-        """
-        Closes the database and ensures all data is persisted
-        To be implemented in milestone 2
-        """
-        pass
+        for v in self.tables.values():
+            if v.used:
+                v.save()
 
     def create_table(self, name, num_columns, key_index):
         """
-        Creates a new table in the database
-        :param name: string         #Table name
-        :param num_columns: int     #Number of data columns (excluding metadata)
-        :param key_index: int       #Index of the primary key column
-        :return: Table             #The newly created table
-        :raises: Exception if table with given name already exists
+        Creates a new table
         """
-        # Check if table exists; throw error if so
-        if name in self.tables: raise Exception("ERROR: Table already exists")
-
-        # Create table
-        table = Table(name, num_columns, key_index)
-        self.tables[name] = table
-
-        # Return table
+        if (table:=self.tables.get(name, None)) is None:
+            table = Table(name, num_columns, key_index, self.path)
+            table.create_meta_data()
+            self.tables[name] = table
         return table
 
     def drop_table(self, name):
         """
-        Removes a table from the database
-        :param name: string     #Name of the table to drop
-        :raises: Exception if table does not exist
+        Deletes the specified table
         """
-        # Check if table exists; throw error if not
-        if name not in self.tables: raise Exception("ERROR: Table does not exist")
-
-        # Delete table
-        del self.tables[name]
+        if name in self.tables:
+            shutil.rmtree(self.path+name)
+            del self.tables[name]
+            return True
+        else:
+            return False
 
     def get_table(self, name):
         """
-        Retrieves a table from the database
-        :param name: string     #Name of the table to retrieve
-        :return: Table         #The requested table
-        :raises: KeyError if table does not exist
+        Returns table with the passed name
         """
-        return self.tables[name]
+        if table:=self.tables.get(name, None):
+            table.used = True
+        return table
+    
