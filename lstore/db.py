@@ -3,11 +3,22 @@ from lstore.table import Table
 import os, shutil
 
 class Database:
+
     def __init__(self):
         self.tables = {}  # Initialize tables as a dictionary
         self.path = "./Lineage_DB/"
 
     def open(self, currentpath):
+        """
+        Opens the database
+
+        Args:
+            currentpath (str): The path to the database
+
+        Returns:
+            None
+        """
+
         self.path = currentpath
         os.makedirs(self.path, exist_ok=True)
         for name in os.listdir(self.path):
@@ -16,9 +27,17 @@ class Database:
                 self.tables[name].restart_table()
 
     def close(self):
+        """
+        Closes the database
+
+        Args:
+            None
+
+        Returns:
+            None
+        """
         for v in self.tables.values():
-            if v.used:
-                v.save()
+            if v.used: v.save()
 
     def create_table(self, name, num_columns, key_index):
         """
