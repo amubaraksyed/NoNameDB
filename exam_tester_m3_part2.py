@@ -2,11 +2,18 @@ from lstore.db import Database
 from lstore.query import Query
 from lstore.transaction import Transaction
 from lstore.transaction_worker import TransactionWorker
-
+from time import process_time
 from random import choice, randint, sample, seed
 
+# Start timing the entire test
+total_start_time = process_time()
+
+# Time database open operation
+open_start_time = process_time()
 db = Database()
 db.open('./ECS165')
+open_end_time = process_time()
+print(f"Database open operation took: {open_end_time - open_start_time:.2f} seconds")
 
 # Getting the existing Grades table
 grades_table = db.get_table('Grades')
@@ -42,9 +49,6 @@ for i in range(number_of_transactions):
 for i in range(num_threads):
     transaction_workers.append(TransactionWorker())
 
-
-
-
 updated_records = {}
 # x update on every column
 for j in range(number_of_operations_per_record):
@@ -61,12 +65,9 @@ for j in range(number_of_operations_per_record):
         transactions[key % number_of_transactions].add_query(query.update, grades_table, key, *updated_columns)
 print("Update finished")
 
-
 # add trasactions to transaction workers  
 for i in range(number_of_transactions):
     transaction_workers[i % num_threads].add_transaction(transactions[i])
-
-
 
 # run transaction workers
 for i in range(num_threads):
@@ -75,7 +76,6 @@ for i in range(num_threads):
 # wait for workers to finish
 for i in range(num_threads):
     transaction_workers[i].join()
-
 
 score = len(keys)
 for key in keys:
@@ -142,4 +142,21 @@ for i in range(0, number_of_aggregates):
         valid_sums += 1
 print("Aggregate version 0 finished. Valid Aggregations: ", valid_sums, '/', number_of_aggregates)
 
+# Time the delete operations
+delete_start_time = process_time()
+deleted_keys = sample(keys, 100)
+for key in deleted_keys:
+    query.delete(key)
+    records.pop(key, None)
+delete_end_time = process_time()
+print(f"Delete 100 records took: {delete_end_time - delete_start_time:.2f} seconds")
+
+# Time database close operation
+close_start_time = process_time()
 db.close()
+close_end_time = process_time()
+print(f"Database close operation took: {close_end_time - close_start_time:.2f} seconds")
+
+# Print total time
+total_end_time = process_time()
+print(f"\nTotal test time: {total_end_time - total_start_time:.2f} seconds")
