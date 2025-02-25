@@ -462,81 +462,89 @@ class Table:
 
     def merge(self):
         """
-        Merge operation to consolidate base and tail records
+        Merges base and tail pages by applying updates, removing tail pages, 
+        and writing consolidated records back to base pages.
         """
-        # Track which records have been updated
-        updated_records = set()
-        
-        # For each column (including metadata)
-        for i in range(self.total_columns):
-            # Get all pages in the column's range
-            pages = sorted(self.page_range[i].keys())
-            base_pages = pages[:16]  # First 16 pages are base pages
-            tail_pages = pages[16:]  # Remaining pages are tail pages
-            
-            # For each tail page
+        print("Starting merge process...")
+
+        # Track which RIDs have been updated
+        updated_rids = set()
+
+        # Step 1: Identify updated records
+        for col in range(self.total_columns):
+            pages = sorted(self.page_range[col].keys())
+            tail_pages = pages[16:]  # Tail pages start after base pages
+
             for tail_page_num in tail_pages:
-                tail_page = self._get_page(i, tail_page_num)
-                
-                # Read all records in tail page
+                tail_page = self._get_page(col, tail_page_num)
+
                 for idx in range(tail_page.num_records()):
-                    value = tail_page.read(idx)
                     rid = None
-                    
-                    # Find the RID this tail record belongs to
-                    for record_rid, location in self.page_directory[i].items():
-                        if location[0] == tail_page_num and location[1] == idx:
+
+                    # Find which RID belongs to this tail record
+                    for record_rid, loc in self.page_directory[col].items():
+                        if loc[0] == tail_page_num and loc[1] == idx:
                             rid = record_rid
                             break
-                    
+
                     if rid is not None:
-                        updated_records.add(rid)
-                        
-                # Unpin the tail page
+                        updated_rids.add(rid)
+
                 self.bufferpool.unpin_page(tail_page.path, tail_page.page_num)
-                
-        # Now consolidate records that have been updated
-        for rid in updated_records:
-            # Get the latest values for all columns (metadata + data)
+
+        # Step 2: Apply updates from tail records to base pages
+        for rid in updated_rids:
             latest_values = []
-            for i in range(self.total_columns):
-                value = self.read_value(i, rid)
-                latest_values.append(value)
-            
-            # Reset metadata for consolidated record
-            latest_values[INDIRECTION_COLUMN] = 0  # No more updates
-            latest_values[TIMESTAMP_COLUMN] = int(time())  # Current time
+            for col in range(self.total_columns):
+                latest_values.append(self.read_value(col, rid))  # Fetch latest value
+
+            # Reset metadata for the merged record
+            latest_values[INDIRECTION_COLUMN] = 0  # No further updates
+            latest_values[TIMESTAMP_COLUMN] = int(time())  # Current timestamp
             latest_values[SCHEMA_ENCODING_COLUMN] = 0  # Reset schema encoding
-            
-            # Write consolidated record to base pages
-            for i in range(self.total_columns):
-                # Find the appropriate base page
-                base_page_num = (rid % 16) + 1  # Distribute records across base pages
-                base_page = self._get_page(i, base_page_num)
-                
-                # Write the value
-                if base_page.has_capacity():
-                    index = base_page.num_records()
-                    if base_page.write(latest_values[i]):
-                        self.bufferpool.mark_dirty(base_page.path, base_page.page_num)
-                        self.page_directory[i][rid] = [base_page_num, index]
-                        
+
+            # Find a base page with capacity or create a new one
+            for col in range(self.total_columns):
+                base_page_num = (rid % 16) + 1  # Assign record to base page
+                base_page = self._get_page(col, base_page_num)
+
+                if not base_page.has_capacity():
+                    # Create a new base page if full
+                    self.last_page_number += 1
+                    base_page_num = self.last_page_number
+                    base_page = self._get_page(col, base_page_num)
+                    self.page_range[col][base_page_num] = base_page
+
+                index = base_page.num_records()
+                if base_page.write(latest_values[col]):
+                    self.bufferpool.mark_dirty(base_page.path, base_page.page_num)
+                    self.page_directory[col][rid] = [base_page_num, index]
+
                 self.bufferpool.unpin_page(base_page.path, base_page.page_num)
-            
-            # Update indices (only for data columns)
-            for i in range(self.metadata_columns, self.total_columns):
-                self.index.add_or_move_record_by_col(i, rid, latest_values[i])
-        
-        # Clear tail pages after successful merge
-        for i in range(self.total_columns):
-            pages = sorted(self.page_range[i].keys())
+
+            # Step 3: Update index for new base record
+            for col in range(self.metadata_columns, self.total_columns):
+                self.index.add_or_move_record_by_col(col, rid, latest_values[col])
+
+        # Step 4: Clean up tail pages and page directory
+        for col in range(self.total_columns):
+            pages = sorted(self.page_range[col].keys())
             tail_pages = pages[16:]
+
             for tail_page_num in tail_pages:
-                # Remove tail page from page range
-                self.page_range[i].pop(tail_page_num)
-                
-        # Reset last page number
+                # Remove tail page references
+                del self.page_range[col][tail_page_num]
+
+                # Remove tail records from the page directory
+                for rid in updated_rids:
+                    if rid in self.page_directory[col]:
+                        del self.page_directory[col][rid]
+
+        # Reset last page number to keep page numbering sequential
         self.last_page_number = self.total_columns * 16 + self.total_columns
+
+        print("Merge completed successfully!")
+
 
     def get_page_range_for_rid(self, rid: int) -> int:
         """
