@@ -96,18 +96,21 @@ class Query:
         Sum the values of a column over a range of records
         """
         # Initialize the sum variable
-        sum = 0
-
+        total = 0
+        
+        # Adjust column index to account for metadata columns
+        actual_col = aggregate_column_index + self.table.metadata_columns if aggregate_column_index != self.table.key_col else aggregate_column_index + self.table.metadata_columns
+        
         # Iterate over the range of records
-        for rid in range(start_range, end_range+1):
-            # Read the value of the aggregate column for the current record
-            value = self.table.read_value(aggregate_column_index, rid)
-
-            # Add the value to the sum, or add 0 if the value is None
-            sum += value if value else 0
-
-        # Return the sum of the values
-        return sum
+        for rid in range(start_range, end_range + 1):
+            # Check if the record exists
+            if rid in self.table.page_directory[actual_col]:
+                # Read the value using read_value which properly handles version chains
+                value = self.table.read_value(actual_col, rid)
+                if value is not None:
+                    total += value
+        
+        return total
 
     def sum_version(self, start_range, end_range, aggregate_column_index, relative_version):
         """

@@ -1,7 +1,9 @@
 from lstore.index import Index
 from time import time
 from lstore.page import Page
+from lstore.bufferpool import BufferPoolManager
 import json, os
+from lstore.config import MERGE_TRIGGER_COUNT, INDIRECTION_COLUMN, RID_COLUMN, TIMESTAMP_COLUMN, SCHEMA_ENCODING_COLUMN
 
 class Record:
     def __init__(self, rid: int, key: int, columns: int):
@@ -9,237 +11,376 @@ class Record:
         self.key = key
         self.columns = columns
 
+    def __str__(self):
+        return f"Record(rid={self.rid}, key={self.key}, columns={self.columns})"
+
 class Table:
     """
     Represents a table in the database
     """
-    def __init__(self, name, num_columns: int, key_col: int, currentpath):
+    def __init__(self, name, num_columns: int, key_col: int, currentpath: str, bufferpool: BufferPoolManager):
         self.name = name
-        self.path = os.path.join(currentpath,name)
+        self.path = os.path.join(currentpath, name)
         os.makedirs(self.path, exist_ok=True)
-        os.makedirs(os.path.join(self.path,"data"), exist_ok=True)
+        os.makedirs(os.path.join(self.path, "data"), exist_ok=True)
+        
         self.num_columns = num_columns
-        self.key_col = key_col  
+        self.key_col = key_col
         self.versions = []
-        self.page_directory = [] 
+        self.page_directory = []
         self.page_range = []
-        for i in range(self.num_columns):
-            self.page_range.append(dict()) 
+        self.bufferpool = bufferpool
+        
+        # Initialize metadata columns
+        self.metadata_columns = 4  # Number of metadata columns
+        self.total_columns = self.num_columns + self.metadata_columns
+        
+        # Initialize page ranges
+        self.base_pages_per_range = 16
+        self.current_page_range = 0
+        self.page_ranges = []  # List of page ranges
+        
+        # Initialize page ranges for both data and metadata columns
+        for i in range(self.total_columns):
+            self.page_range.append(dict())
             self.page_directory.append(dict())
+            
+        # Initialize index after setting up total_columns
         self.index = Index(self)
+        # Create index on key column by default
+        self.index.create_index(self.key_col + self.metadata_columns)
+        
         self.is_history = False
         self.used = False
-    
+        self.update_count = 0  # Track number of updates
+        self.last_page_number = self.total_columns * 16 + self.total_columns
+
+    def _get_page(self, col: int, page_num: int) -> Page:
+        """
+        Gets a page from the bufferpool
+        """
+        page_path = os.path.join(self.path, "data", f"{col}_{page_num}.bin")
+        return self.bufferpool.get_page(page_path, page_num)
+
     def create_meta_data(self):
         """
         Create metadata for the table
         """
-        # Set the table to used
         self.used = True
-
-        # Set the last page number
-        self.last_page_number = self.num_columns*16+self.num_columns
-
-        # Create pages for the table
-        cnt = 0
-        for i in range(1, self.num_columns*16+1):
-            self.page_range[cnt][i] = Page(self.path, i)
-            if i%16==0: self.page_range[cnt][self.num_columns*16+1+cnt] = Page(self.path, i); cnt += 1
-
-    def restart_table(self):
-        """ 
-        Restart the table
-        """
-        # Set the last page number
-        self.last_page_number = 0
-
-        # Load the metadata
-        data = json.load(open(os.path.join(self.path,'metadata.json'),))
-        self.num_columns = int(data["columns"])
-        self.key_col = int(data["key_col"])
-
-        # Load the page directory
-        page_dir = json.load(open(os.path.join(self.path,'page_directory.json'),))
-        self.page_directory = [{int(k):[int(v[0]), int(v[1])] for k,v in col.items()} for col in page_dir]
-
-        # Load the page range
-        page_range = json.load(open(os.path.join(self.path,'page_range.json'),))
-        self.page_range = [{int(page_num): Page(self.path, int(page_num)) for page_num in range} for range in page_range]
-
-        # Update the last page number
-        for range in page_range:
-            if (num:=max(range)) > self.last_page_number: self.last_page_number = num
-
-        # Load the versions
-        versions = json.load(open(os.path.join(self.path,'versions.json'),))
-        self.versions = [[{int(k):[int(v[0]), int(v[1])] for k,v in col.items()} for col in version] for version in versions]
-
-        # Restart the index
-        self.index.restart_index()
-
-    def save(self):
-        """
-        Save the table
-        """
-        # Save the page directory
-        with open(os.path.join(self.path,'page_directory.json'),"w") as file:
-            file.write(json.dumps(self.page_directory))
-
-        # Save the page range
-        value = []
-        for col in self.page_range: value.append(list(col.keys()))
-        with open(os.path.join(self.path,'page_range.json'),"w") as file:file.write(json.dumps(value))
-
-        # Save the versions
-        with open(os.path.join(self.path,'versions.json'),"w") as file: file.write(json.dumps(self.versions))
-
-        # Save the metadata
-        data = {"columns": self.num_columns, "key_col": self.key_col}
-        with open(os.path.join(self.path,'metadata.json'),"w") as file: file.write(json.dumps(data))
+        self.last_page_number = self.total_columns * 16 + self.total_columns
+        
+        # Create data directory if it doesn't exist
+        os.makedirs(os.path.join(self.path, "data"), exist_ok=True)
+        
+        # Initialize base pages for each column
+        for col in range(self.total_columns):
+            for i in range(1, 17):  # 16 base pages per column
+                page = self._get_page(col, i)
+                self.page_range[col][i] = page
+                self.bufferpool.unpin_page(page.path, page.page_num)
+            
+            # Create initial tail page for each column
+            tail_page = self._get_page(col, 17)  # First tail page after base pages
+            self.page_range[col][17] = tail_page
+            self.bufferpool.unpin_page(tail_page.path, tail_page.page_num)
 
     def write(self, columns: list):
         """
         Write a new record to the table
         """
-        # Get the record ID
         rid = columns[self.key_col]
-
-        # Check if the record ID is already in the table
-        if rid in self.page_directory[self.key_col]: return None
-
-        # Find a page to write to
-        for i in range(self.num_columns):
-
-            # Initialize the page, index, and page number
-            page, index, page_num = None, None, None
-
-            # Find a page to write to
+        if rid in self.page_directory[self.key_col]:
+            return None
+            
+        # Prepare metadata
+        metadata = [
+            0,              # INDIRECTION_COLUMN (no updates yet)
+            rid,            # RID_COLUMN
+            int(time()),    # TIMESTAMP_COLUMN
+            0              # SCHEMA_ENCODING_COLUMN (no updates yet)
+        ]
+        
+        # Write metadata columns first
+        for i in range(self.metadata_columns):
+            page = None
+            index = None
+            page_num = None
+            
+            # Find page with capacity
             for k, v in self.page_range[i].items():
-                if v.has_capacity():
-                    page_num, page = k, v
-                    index = page.num_records() if page.num_records() is not None else -1
+                curr_page = self._get_page(i, k)
+                if curr_page.has_capacity():
+                    page_num = k
+                    page = curr_page
+                    index = curr_page.num_records()
                     break
-
-            # If no page is found, create a new page
-            if page_num == None or index == None or page == None:
+                self.bufferpool.unpin_page(curr_page.path, curr_page.page_num)
+                    
+            # Create new page if needed
+            if page_num is None or index is None or page is None:
                 index = 0
-                self.last_page_number+=1
+                self.last_page_number += 1
                 page_num = self.last_page_number
-                page = Page(self.path, self.last_page_number)
+                page = self._get_page(i, page_num)
                 self.page_range[i][page_num] = page
-            else: index += 1
-
-            # Write the record to the page
-            check = page.write(columns[i])
-            if check:
-                self.index.add_or_move_record_by_col(i, rid, columns[i])
+            
+            # Write metadata
+            if page.write(metadata[i]):
+                self.bufferpool.mark_dirty(page.path, page.page_num)
                 self.page_directory[i][rid] = [page_num, index]
+            
+            self.bufferpool.unpin_page(page.path, page.page_num)
+            
+        # Write actual data columns
+        for i in range(self.num_columns):
+            page = None
+            index = None
+            page_num = None
+            
+            # Find page with capacity
+            for k, v in self.page_range[i + self.metadata_columns].items():
+                curr_page = self._get_page(i + self.metadata_columns, k)
+                if curr_page.has_capacity():
+                    page_num = k
+                    page = curr_page
+                    index = curr_page.num_records()
+                    break
+                self.bufferpool.unpin_page(curr_page.path, curr_page.page_num)
+                    
+            # Create new page if needed
+            if page_num is None or index is None or page is None:
+                index = 0
+                self.last_page_number += 1
+                page_num = self.last_page_number
+                page = self._get_page(i + self.metadata_columns, page_num)
+                self.page_range[i + self.metadata_columns][page_num] = page
+            
+            # Write data and update indices
+            if page.write(columns[i]):
+                self.bufferpool.mark_dirty(page.path, page.page_num)
+                self.index.add_or_move_record_by_col(i + self.metadata_columns, rid, columns[i])
+                self.page_directory[i + self.metadata_columns][rid] = [page_num, index]
+            
+            self.bufferpool.unpin_page(page.path, page.page_num)
 
     def update(self, columns: list):
         """
-        Update a record in the table
+        Update existing record
         """
-        # Get the record ID
         rid = columns[self.key_col]
-
-        # Check if the record ID is in the table
+        updated = False
+        schema_encoding = 0
+        
+        # Get current indirection value
+        old_indirection = self.read_value(INDIRECTION_COLUMN, rid)
+        
+        # Create new tail record for updates
+        tail_rid = self.last_page_number + 1
+        
+        # Prepare metadata for tail record
+        metadata = [
+            old_indirection,  # INDIRECTION_COLUMN (points to previous version)
+            tail_rid,        # RID_COLUMN
+            int(time()),     # TIMESTAMP_COLUMN
+            0               # SCHEMA_ENCODING_COLUMN (will be set based on updates)
+        ]
+        
+        # Store updated values and track schema encoding
+        updated_values = []
         for i in range(self.num_columns):
-            page = self.page_directory[i][rid]
-            if not columns[i] == None and not self.read_page(page[0], page[1], i) == columns[i]:
-                # Initialize the page, index, and page number
-                page, index, page_num = None, None, None
-
-                # Find a page to write to
+            if columns[i] is not None:
+                old_page_info = self.page_directory[i + self.metadata_columns][rid]
+                old_page = self._get_page(i + self.metadata_columns, old_page_info[0])
+                old_value = old_page.read(old_page_info[1])
+                self.bufferpool.unpin_page(old_page.path, old_page.page_num)
+                
+                if old_value != columns[i]:
+                    updated = True
+                    schema_encoding |= (1 << i)  # Mark column as updated in schema
+                    updated_values.append(columns[i])
+                else:
+                    updated_values.append(old_value)
+            else:
+                # If column not being updated, get current value
+                updated_values.append(self.read_value(i + self.metadata_columns, rid))
+        
+        if updated:
+            # Update schema encoding in metadata
+            metadata[SCHEMA_ENCODING_COLUMN] = schema_encoding
+            
+            # Write metadata for tail record
+            for i in range(self.metadata_columns):
+                page = None
+                index = None
+                page_num = None
+                
+                # Find page with capacity
                 for k, v in self.page_range[i].items():
-                    if v.has_capacity():
-                        page_num, page = k, v
-                        index = page.num_records() if page.num_records() is not None else -1
+                    curr_page = self._get_page(i, k)
+                    if curr_page.has_capacity():
+                        page_num = k
+                        page = curr_page
+                        index = curr_page.num_records()
                         break
-
-                # If no page is found, create a new page
-                if page_num == None or index == None or page == None:
+                    self.bufferpool.unpin_page(curr_page.path, curr_page.page_num)
+                        
+                # Create new page if needed
+                if page_num is None or index is None or page is None:
                     index = 0
-                    self.last_page_number+=1
+                    self.last_page_number += 1
                     page_num = self.last_page_number
-                    page = Page(self.path, self.last_page_number)
+                    page = self._get_page(i, page_num)
                     self.page_range[i][page_num] = page
-                else: index += 1
-
-                # Write the record to the page
-                check = page.write(columns[i])
-                if check:
-                    self.index.add_or_move_record_by_col(i, rid, columns[i])
+                
+                # Write metadata
+                if page.write(metadata[i]):
+                    self.bufferpool.mark_dirty(page.path, page.page_num)
                     self.page_directory[i][rid] = [page_num, index]
+                
+                self.bufferpool.unpin_page(page.path, page.page_num)
+            
+            # Write updated values
+            for i in range(self.num_columns):
+                page = None
+                index = None
+                page_num = None
+                
+                # Find page with capacity
+                for k, v in self.page_range[i + self.metadata_columns].items():
+                    curr_page = self._get_page(i + self.metadata_columns, k)
+                    if curr_page.has_capacity():
+                        page_num = k
+                        page = curr_page
+                        index = curr_page.num_records()
+                        break
+                    self.bufferpool.unpin_page(curr_page.path, curr_page.page_num)
+                        
+                # Create new page if needed
+                if page_num is None or index is None or page is None:
+                    index = 0
+                    self.last_page_number += 1
+                    page_num = self.last_page_number
+                    page = self._get_page(i + self.metadata_columns, page_num)
+                    self.page_range[i + self.metadata_columns][page_num] = page
+                
+                # Write value and update indices
+                if page.write(updated_values[i]):
+                    self.bufferpool.mark_dirty(page.path, page.page_num)
+                    self.index.add_or_move_record_by_col(i + self.metadata_columns, rid, updated_values[i])
+                    self.page_directory[i + self.metadata_columns][rid] = [page_num, index]
+                
+                self.bufferpool.unpin_page(page.path, page.page_num)
+            
+            # Update indirection pointer of base record
+            base_indirection_info = self.page_directory[INDIRECTION_COLUMN][rid]
+            base_indirection_page = self._get_page(INDIRECTION_COLUMN, base_indirection_info[0])
+            base_indirection_page.update(base_indirection_info[1], tail_rid)
+            self.bufferpool.mark_dirty(base_indirection_page.path, base_indirection_page.page_num)
+            self.bufferpool.unpin_page(base_indirection_page.path, base_indirection_page.page_num)
+            
+            # Increment update count and check if merge needed
+            self.update_count += 1
+            if self.update_count >= MERGE_TRIGGER_COUNT:
+                self.merge()
+                self.update_count = 0
 
     def read_records(self, col_num: int, search_key: int, proj_col: list) -> list[Record]:
         """
-        Read records from the table
+        Read records based on search criteria
         """
-        # Initialize the records and record IDs
-        records, rids = [], []
-
-        # Check if the column number is the key column
+        records = []
+        rids = []
+        
+        # Adjust column number to account for metadata columns
+        actual_col = col_num + self.metadata_columns if col_num != self.key_col else self.key_col + self.metadata_columns
+        
         if col_num == self.key_col:
             rids.append(search_key)
         else:
-            # If the index is not in history mode and the index exists, get the record IDs
-            if not self.is_history and self.index.indices[col_num]:
-                rids = self.index.get_rid_in_col_by_value(col_num, search_key)
+            # Only use index for data columns and when index exists
+            if not self.is_history and actual_col < len(self.index.indices) and self.index.indices[actual_col] is not None:
+                rids = self.index.get_rid_in_col_by_value(actual_col, search_key)
             else:
-                # Get the record IDs from the page directory
-                for k, v in self.page_directory[col_num].items():
-                    if self.read_page(v[0], v[1])==search_key:
+                for k, v in self.page_directory[actual_col].items():
+                    page = self._get_page(actual_col, v[0])
+                    value = page.read(v[1])
+                    self.bufferpool.unpin_page(page.path, page.page_num)
+                    if value == search_key:
                         rids.append(k)
-
-        # Get the records
+                        
         for rid in rids:
-            if rid in self.page_directory[self.key_col]:
+            if rid in self.page_directory[self.metadata_columns + self.key_col]:  # Check in data columns
                 col = []
                 for cnt in range(self.num_columns):
                     if proj_col[cnt] == 1:
-                        col.append(self.read_value(cnt, rid))
-                    else: col.append(None)
-
-                # Add the record to the list of records
-                records.append(Record(rid, self.key_col, col))
-
-        # Return the list of records
+                        # Read from data columns (offset by metadata columns)
+                        col.append(self.read_value(cnt + self.metadata_columns, rid))
+                    else:
+                        col.append(None)
+                records.append(Record(rid, col[self.key_col], col))
+                
         return records
-    
+
     def read_value(self, col: int, rid: int) -> int:
         """
-        Read the value of a column for a specific record
+        Read single value, following the version chain if necessary
         """
-        # Check if the record ID is in the table
-        if not rid in self.page_directory[col]: return None
-
-        # Check if the index is in history mode and the index exists
-        if not self.is_history and self.index.indices[col]:
-            return self.index.get_value_in_col_by_rid(col, rid)
-
-        # Get the page details
-        page_details = self.page_directory[col][rid]
-
-        # Read the value from the page
-        return self.read_page(page_details[0], page_details[1])
+        if rid not in self.page_directory[col]:
+            return None
             
-    def read_page(self, page_num, index, col=None):
-        """
-        Read the value of a column for a specific record
-        """
-        # Check if the column number is provided and the page exists
-        if col and (page:=self.page_range[col].get(page_num, None)): return page.read(index)
+        # Only use index for data columns, not metadata
+        if col >= self.metadata_columns and not self.is_history and col < len(self.index.indices) and self.index.indices[col] is not None:
+            return self.index.get_value_in_col_by_rid(col, rid)
+            
+        # Get the initial page details
+        page_details = self.page_directory[col][rid]
+        current_rid = rid
+        
+        # If this is a data column and we're not in history mode, follow indirection chain
+        if col >= self.metadata_columns and not self.is_history:
+            # Follow indirection chain until we reach the latest version
+            while True:
+                # Get indirection value
+                ind_details = self.page_directory[INDIRECTION_COLUMN][current_rid]
+                ind_page = self._get_page(INDIRECTION_COLUMN, ind_details[0])
+                next_rid = ind_page.read(ind_details[1])
+                self.bufferpool.unpin_page(ind_page.path, ind_page.page_num)
+                
+                # If no more updates (indirection is 0), break
+                if next_rid == 0:
+                    break
+                    
+                # Update current RID and page details
+                current_rid = next_rid
+                page_details = self.page_directory[col][current_rid]
+        
+        # Read the value from the final page
+        page = self._get_page(col, page_details[0])
+        value = page.read(page_details[1])
+        self.bufferpool.unpin_page(page.path, page.page_num)
+        return value
 
-        # Check if the page exists in any range
-        for range in self.page_range:
-            if page:=range.get(page_num, None): return page.read(index)
-
-        # Return None if the page does not exist
+    def read_page(self, page_num: int, index: int, col: int = None) -> int:
+        """
+        Read value from specific page
+        """
+        if col is not None:
+            page = self._get_page(col, page_num)
+            value = page.read(index)
+            self.bufferpool.unpin_page(page.path, page.page_num)
+            return value
+            
+        for i in range(self.num_columns):
+            page = self._get_page(i, page_num)
+            value = page.read(index)
+            self.bufferpool.unpin_page(page.path, page.page_num)
+            if value is not None:
+                return value
         return None
-    
+
     def delete(self, rid: int):
         """
-        Delete a record from the table
+        Delete record
         """
         for i in range(self.num_columns):
             self.page_directory[i].pop(rid)
@@ -247,6 +388,318 @@ class Table:
 
     def make_ver_copy(self):
         """
-        Make a version copy of the table
+        Create version snapshot
         """
-        self.versions.append([{k:[v[0], v[1]] for k,v in col.items()} for col in self.page_directory])
+        self.versions.append([{k:[v[0], v[1]] 
+                             for k,v in col.items()} 
+                            for col in self.page_directory])
+
+    def save(self):
+        """
+        Save table metadata
+        """
+        # Save the page directory
+        with open(os.path.join(self.path, 'page_directory.json'), "w") as file:
+            file.write(json.dumps(self.page_directory))
+
+        # Save the page range
+        value = []
+        for col in self.page_range:
+            value.append(list(col.keys()))
+        with open(os.path.join(self.path, 'page_range.json'), "w") as file:
+            file.write(json.dumps(value))
+
+        # Save the versions
+        with open(os.path.join(self.path, 'versions.json'), "w") as file:
+            file.write(json.dumps(self.versions))
+
+        # Save the metadata
+        data = {
+            "columns": self.num_columns, 
+            "key_col": self.key_col,
+            "update_count": self.update_count
+        }
+        with open(os.path.join(self.path, 'metadata.json'), "w") as file:
+            file.write(json.dumps(data))
+
+    def restart_table(self):
+        """
+        Restart table from disk
+        """
+        self.last_page_number = 0
+        
+        # Load metadata
+        data = json.load(open(os.path.join(self.path, 'metadata.json')))
+        self.num_columns = int(data["columns"])
+        self.key_col = int(data["key_col"])
+        self.update_count = int(data.get("update_count", 0))  # Default to 0 if not found
+        
+        # Load page directory
+        page_dir = json.load(open(os.path.join(self.path, 'page_directory.json')))
+        self.page_directory = [{int(k):[int(v[0]), int(v[1])] 
+                              for k,v in col.items()} for col in page_dir]
+        
+        # Load page range
+        page_range = json.load(open(os.path.join(self.path, 'page_range.json')))
+        self.page_range = [{int(page_num): self._get_page(i, int(page_num)) 
+                           for page_num in range} for i, range in enumerate(page_range)]
+        
+        # Update last page number
+        for range in page_range:
+            if range:  # Check if range is not empty
+                max_page = max(map(int, range))
+                if max_page > self.last_page_number:
+                    self.last_page_number = max_page
+        
+        # Load versions
+        versions = json.load(open(os.path.join(self.path, 'versions.json')))
+        self.versions = [[{int(k):[int(v[0]), int(v[1])] 
+                          for k,v in col.items()} for col in version] 
+                        for version in versions]
+        
+        # Rebuild indices
+        self.index.restart_index()
+
+    def merge(self):
+        """
+        Merge operation to consolidate base and tail records
+        """
+        # Track which records have been updated
+        updated_records = set()
+        
+        # For each column (including metadata)
+        for i in range(self.total_columns):
+            # Get all pages in the column's range
+            pages = sorted(self.page_range[i].keys())
+            base_pages = pages[:16]  # First 16 pages are base pages
+            tail_pages = pages[16:]  # Remaining pages are tail pages
+            
+            # For each tail page
+            for tail_page_num in tail_pages:
+                tail_page = self._get_page(i, tail_page_num)
+                
+                # Read all records in tail page
+                for idx in range(tail_page.num_records()):
+                    value = tail_page.read(idx)
+                    rid = None
+                    
+                    # Find the RID this tail record belongs to
+                    for record_rid, location in self.page_directory[i].items():
+                        if location[0] == tail_page_num and location[1] == idx:
+                            rid = record_rid
+                            break
+                    
+                    if rid is not None:
+                        updated_records.add(rid)
+                        
+                # Unpin the tail page
+                self.bufferpool.unpin_page(tail_page.path, tail_page.page_num)
+                
+        # Now consolidate records that have been updated
+        for rid in updated_records:
+            # Get the latest values for all columns (metadata + data)
+            latest_values = []
+            for i in range(self.total_columns):
+                value = self.read_value(i, rid)
+                latest_values.append(value)
+            
+            # Reset metadata for consolidated record
+            latest_values[INDIRECTION_COLUMN] = 0  # No more updates
+            latest_values[TIMESTAMP_COLUMN] = int(time())  # Current time
+            latest_values[SCHEMA_ENCODING_COLUMN] = 0  # Reset schema encoding
+            
+            # Write consolidated record to base pages
+            for i in range(self.total_columns):
+                # Find the appropriate base page
+                base_page_num = (rid % 16) + 1  # Distribute records across base pages
+                base_page = self._get_page(i, base_page_num)
+                
+                # Write the value
+                if base_page.has_capacity():
+                    index = base_page.num_records()
+                    if base_page.write(latest_values[i]):
+                        self.bufferpool.mark_dirty(base_page.path, base_page.page_num)
+                        self.page_directory[i][rid] = [base_page_num, index]
+                        
+                self.bufferpool.unpin_page(base_page.path, base_page.page_num)
+            
+            # Update indices (only for data columns)
+            for i in range(self.metadata_columns, self.total_columns):
+                self.index.add_or_move_record_by_col(i, rid, latest_values[i])
+        
+        # Clear tail pages after successful merge
+        for i in range(self.total_columns):
+            pages = sorted(self.page_range[i].keys())
+            tail_pages = pages[16:]
+            for tail_page_num in tail_pages:
+                # Remove tail page from page range
+                self.page_range[i].pop(tail_page_num)
+                
+        # Reset last page number
+        self.last_page_number = self.total_columns * 16 + self.total_columns
+
+    def get_page_range_for_rid(self, rid: int) -> int:
+        """
+        Determines which page range a RID belongs to
+        """
+        return rid // (self.base_pages_per_range * 512)  # 512 records per page
+
+    def create_new_page_range(self):
+        """
+        Creates a new page range
+        """
+        page_range = {
+            'base_pages': {},
+            'tail_pages': {},
+            'base_rid_count': 0
+        }
+        self.page_ranges.append(page_range)
+        self.current_page_range = len(self.page_ranges) - 1
+        return page_range
+
+    def get_or_create_page_range(self, rid: int) -> dict:
+        """
+        Gets the appropriate page range for a RID, creating it if necessary
+        """
+        range_index = self.get_page_range_for_rid(rid)
+        while range_index >= len(self.page_ranges):
+            self.create_new_page_range()
+        return self.page_ranges[range_index]
+
+    def insert_record(self, *columns) -> int:
+        """
+        Insert a record with specified columns
+        """
+        if len(columns) != self.num_columns:
+            raise ValueError(f"Expected {self.num_columns} columns but got {len(columns)}")
+
+        # Get or create appropriate page range
+        rid = self._get_next_rid()
+        page_range = self.get_or_create_page_range(rid)
+        
+        # Initialize metadata
+        schema_encoding = '0' * self.num_columns
+        timestamp = int(time.time())
+        indirection = 0  # No updates yet
+        
+        # Prepare all values (metadata + data)
+        all_values = [indirection, rid, timestamp, schema_encoding] + list(columns)
+        
+        # Insert into each column
+        for col_index, value in enumerate(all_values):
+            # Get or create page for this column in the current page range
+            page_num = self._get_or_create_page_for_column(col_index, rid, is_base=True)
+            page = self._get_page(col_index, page_num)
+            
+            # Calculate offset within page
+            offset = (rid % 512)  # 512 records per page
+            
+            # Write value and update page directory
+            page.write(offset, value)
+            self.page_directory[col_index][rid] = (page_num, offset)
+            self.bufferpool.unpin_page(page.path, page.page_num)
+            
+        # Update page range record count
+        page_range['base_rid_count'] += 1
+        
+        # Add to index if it exists
+        if self.index.indices[self.key_col]:
+            self.index.add_to_index(self.key_col, columns[self.key_col], rid)
+            
+        return rid
+
+    def update_record(self, primary_key: int, *columns) -> None:
+        """
+        Update a record with specified columns
+        """
+        if len(columns) != self.num_columns:
+            raise ValueError(f"Expected {self.num_columns} columns but got {len(columns)}")
+            
+        # Find the base RID using index
+        base_rid = self.index.get_rid_from_key(self.key_col, primary_key)
+        if base_rid is None:
+            raise ValueError(f"Record with primary key {primary_key} not found")
+            
+        # Get the page range for this record
+        page_range = self.get_or_create_page_range(base_rid)
+        
+        # Create new tail record
+        new_rid = self._get_next_rid()
+        
+        # Get current schema encoding
+        schema_encoding_details = self.page_directory[SCHEMA_ENCODING_COLUMN][base_rid]
+        schema_page = self._get_page(SCHEMA_ENCODING_COLUMN, schema_encoding_details[0])
+        current_schema = schema_page.read(schema_encoding_details[1])
+        self.bufferpool.unpin_page(schema_page.path, schema_page.page_num)
+        
+        # Update schema encoding based on which columns are being updated
+        new_schema = list(bin(current_schema)[2:].zfill(self.num_columns))
+        for i, value in enumerate(columns):
+            if value is not None:
+                new_schema[i] = '1'
+        new_schema = int(''.join(new_schema), 2)
+        
+        # Prepare metadata for tail record
+        timestamp = int(time.time())
+        
+        # Get current indirection
+        ind_details = self.page_directory[INDIRECTION_COLUMN][base_rid]
+        ind_page = self._get_page(INDIRECTION_COLUMN, ind_details[0])
+        current_indirection = ind_page.read(ind_details[1])
+        self.bufferpool.unpin_page(ind_page.path, ind_page.page_num)
+        
+        # Prepare all values for tail record
+        all_values = [current_indirection, new_rid, timestamp, new_schema]
+        
+        # Copy existing values and apply updates
+        for i in range(self.num_columns):
+            if columns[i] is not None:
+                all_values.append(columns[i])
+            else:
+                # Get existing value from base record
+                all_values.append(self.read_value(i + self.metadata_columns, base_rid))
+        
+        # Insert tail record
+        for col_index, value in enumerate(all_values):
+            # Get or create tail page for this column
+            page_num = self._get_or_create_page_for_column(col_index, new_rid, is_base=False)
+            page = self._get_page(col_index, page_num)
+            
+            # Calculate offset within page
+            offset = (new_rid % 512)
+            
+            # Write value and update page directory
+            page.write(offset, value)
+            self.page_directory[col_index][new_rid] = (page_num, offset)
+            self.bufferpool.unpin_page(page.path, page.page_num)
+            
+        # Update base record's indirection to point to new tail record
+        ind_page = self._get_page(INDIRECTION_COLUMN, ind_details[0])
+        ind_page.write(ind_details[1], new_rid)
+        self.bufferpool.unpin_page(ind_page.path, ind_page.page_num)
+        
+        # Increment update count
+        self.update_count += 1
+
+    def _get_or_create_page_for_column(self, col_index: int, rid: int, is_base: bool = True) -> int:
+        """
+        Gets or creates a page for the specified column in the appropriate page range
+        """
+        page_range = self.get_or_create_page_range(rid)
+        pages_dict = page_range['base_pages'] if is_base else page_range['tail_pages']
+        
+        if col_index not in pages_dict:
+            pages_dict[col_index] = []
+            
+        # Calculate which page number within the range we need
+        records_per_page = 512
+        page_index = (rid % (records_per_page * self.base_pages_per_range)) // records_per_page
+        
+        # Create new pages if needed
+        while len(pages_dict[col_index]) <= page_index:
+            new_page_num = len(self.page_range[col_index])
+            new_page = Page(new_page_num, os.path.join(self.path, "data", f"{col_index}_{new_page_num}.page"))
+            self.page_range[col_index][new_page_num] = new_page
+            pages_dict[col_index].append(new_page_num)
+            
+        return pages_dict[col_index][page_index]

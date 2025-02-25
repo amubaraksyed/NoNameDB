@@ -1,47 +1,90 @@
 import os
+from typing import Optional, List
 
 class Page:
     """
     Represents a page of data in the database.
+    Handles both in-memory and disk operations.
     """
-    # data written direction into disk on binary files
-    def __init__(self, currentpath, pagenum):
+    def __init__(self, currentpath: str, pagenum: int):
         self.capacity = 4096
         self.page_num = pagenum
-        self.path = os.path.join(currentpath,"data/page"+str(self.page_num)+".bin")
-        open(self.path, 'ab')
-
-    def num_records(self):
-        """
-        Get the number of records in the page
-        """
-        return (os.path.getsize(self.path)/8)-1
-    
-    def has_capacity(self):
-        """
-        Check if the page has capacity for a new record
-        """
-        return False if os.path.getsize(self.path) >= self.capacity else True
-
-    def write(self, value):
-        """
-        Write a new record to the page
-        """
-        if self.has_capacity is False:
-            return False
+        self.path = os.path.join(currentpath, f"{str(self.page_num)}.bin")
+        self.data: List[int] = []  # In-memory data
+        self.is_dirty = False
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        
+        # Load data from disk if exists
+        if os.path.exists(self.path):
+            self._load_from_disk()
         else:
-            with open(self.path, 'ab') as file:
-                file.write(bytes(value.to_bytes(8, byteorder="big")))
-            return True
-            
-    def read(self, index):
+            # Create empty file
+            open(self.path, 'ab').close()
+
+    def _load_from_disk(self) -> None:
         """
-        Read a record from the page
+        Loads page data from disk
         """
-        if index > self.num_records():
-            return None
-        else:
+        self.data = []
+        if os.path.exists(self.path):
             with open(self.path, 'rb') as file:
-                file.seek(int(index * 8), 1)
-                read_array = list(file.read(8))
-        return int.from_bytes(read_array, byteorder='big')
+                while True:
+                    try:
+                        value_bytes = file.read(8)
+                        if not value_bytes:
+                            break
+                        self.data.append(int.from_bytes(value_bytes, byteorder='big'))
+                    except:
+                        break
+
+    def flush_to_disk(self) -> None:
+        """
+        Writes page data to disk
+        """
+        with open(self.path, 'wb') as file:
+            for value in self.data:
+                file.write(value.to_bytes(8, byteorder='big'))
+        self.is_dirty = False
+
+    def num_records(self) -> int:
+        """
+        Returns number of records in the page
+        """
+        return len(self.data)
+    
+    def has_capacity(self) -> bool:
+        """
+        Checks if page has capacity for more records
+        """
+        return len(self.data) * 8 < self.capacity
+
+    def write(self, value: int) -> bool:
+        """
+        Writes a value to the page
+        """
+        if not self.has_capacity():
+            return False
+        
+        self.data.append(value)
+        self.is_dirty = True
+        return True
+            
+    def read(self, index: int) -> Optional[int]:
+        """
+        Reads a value from the page
+        """
+        if index >= len(self.data):
+            return None
+        return self.data[index]
+
+    def update(self, index: int, value: int) -> bool:
+        """
+        Updates a value in the page
+        """
+        if index >= len(self.data):
+            return False
+        self.data[index] = value
+        self.is_dirty = True
+        return True
