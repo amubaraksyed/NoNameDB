@@ -1,6 +1,9 @@
 import os
 
 class Page:
+    """
+    Represents a page of data in the database.
+    """
     # data written direction into disk on binary files
     def __init__(self, currentpath, pagenum):
         self.capacity = 4096
@@ -9,12 +12,21 @@ class Page:
         open(self.path, 'ab')
 
     def num_records(self):
+        """
+        Get the number of records in the page
+        """
         return (os.path.getsize(self.path)/8)-1
     
     def has_capacity(self):
+        """
+        Check if the page has capacity for a new record
+        """
         return False if os.path.getsize(self.path) >= self.capacity else True
 
     def write(self, value):
+        """
+        Write a new record to the page
+        """
         if self.has_capacity is False:
             return False
         else:
@@ -23,6 +35,9 @@ class Page:
             return True
             
     def read(self, index):
+        """
+        Read a record from the page
+        """
         if index > self.num_records():
             return None
         else:
