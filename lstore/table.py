@@ -45,10 +45,8 @@ class Table:
             self.page_range.append(dict())
             self.page_directory.append(dict())
             
-        # Initialize index after setting up total_columns
+        # Initialize index
         self.index = Index(self)
-        # Create index on key column by default
-        self.index.create_index(self.key_col + self.metadata_columns)
         
         self.is_history = False
         self.used = False
@@ -342,6 +340,10 @@ class Table:
         if col >= self.metadata_columns and not self.is_history:
             # Follow indirection chain until we reach the latest version
             while True:
+                # Check if current_rid exists in indirection column
+                if current_rid not in self.page_directory[INDIRECTION_COLUMN]:
+                    break
+                    
                 # Get indirection value
                 ind_details = self.page_directory[INDIRECTION_COLUMN][current_rid]
                 ind_page = self._get_page(INDIRECTION_COLUMN, ind_details[0])
@@ -350,6 +352,10 @@ class Table:
                 
                 # If no more updates (indirection is 0), break
                 if next_rid == 0:
+                    break
+                    
+                # Check if next_rid exists in the target column
+                if next_rid not in self.page_directory[col]:
                     break
                     
                 # Update current RID and page details
@@ -436,20 +442,31 @@ class Table:
         self.key_col = int(data["key_col"])
         self.update_count = int(data.get("update_count", 0))  # Default to 0 if not found
         
+        # Update total columns
+        self.total_columns = self.num_columns + self.metadata_columns
+        
+        # Reinitialize page ranges for both data and metadata columns
+        self.page_directory = []
+        self.page_range = []
+        for i in range(self.total_columns):
+            self.page_range.append(dict())
+            self.page_directory.append(dict())
+        
         # Load page directory
         page_dir = json.load(open(os.path.join(self.path, 'page_directory.json')))
         self.page_directory = [{int(k):[int(v[0]), int(v[1])] 
                               for k,v in col.items()} for col in page_dir]
         
         # Load page range
-        page_range = json.load(open(os.path.join(self.path, 'page_range.json')))
+        page_ranges_data = json.load(open(os.path.join(self.path, 'page_range.json')))
         self.page_range = [{int(page_num): self._get_page(i, int(page_num)) 
-                           for page_num in range} for i, range in enumerate(page_range)]
+                           for page_num in page_range_nums} 
+                           for i, page_range_nums in enumerate(page_ranges_data)]
         
         # Update last page number
-        for range in page_range:
-            if range:  # Check if range is not empty
-                max_page = max(map(int, range))
+        for page_range_nums in page_ranges_data:
+            if page_range_nums:  # Check if range is not empty
+                max_page = max(map(int, page_range_nums))
                 if max_page > self.last_page_number:
                     self.last_page_number = max_page
         
@@ -459,8 +476,8 @@ class Table:
                           for k,v in col.items()} for col in version] 
                         for version in versions]
         
-        # Rebuild indices
-        self.index.restart_index()
+        # Create index on key column after loading metadata
+        self.index.create_index(self.key_col + self.metadata_columns)
 
     def merge(self):
         """

@@ -28,9 +28,18 @@ class Database:
         
         os.makedirs(self.path, exist_ok=True)
         for name in os.listdir(self.path):
-            if os.path.isdir(os.path.join(self.path,name)):
-                self.tables[name] = Table(name, 0, 0, self.path, self.bufferpool)
-                self.tables[name].restart_table()
+            table_path = os.path.join(self.path, name)
+            if os.path.isdir(table_path):
+                # Check if metadata file exists
+                metadata_path = os.path.join(table_path, 'metadata.json')
+                if not os.path.exists(metadata_path):
+                    continue
+                    
+                # Create table with temporary values
+                table = Table(name, 0, 0, self.path, self.bufferpool)
+                # Load actual values from disk
+                table.restart_table()
+                self.tables[name] = table
 
     def close(self):
         """
