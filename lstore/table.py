@@ -53,6 +53,21 @@ class Table:
         self.update_count = 0  # Track number of updates
         self.last_page_number = self.total_columns * 16 + self.total_columns
 
+    def __getstate__(self):
+        """
+        Called when pickling - returns state to be pickled
+        """
+        state = self.__dict__.copy()
+        # Don't pickle the bufferpool
+        state['bufferpool'] = None
+        return state
+        
+    def __setstate__(self, state):
+        """
+        Called when unpickling - restores state
+        """
+        self.__dict__.update(state)
+        
     def _get_page(self, col: int, page_num: int) -> Page:
         """
         Gets a page from the bufferpool

@@ -1,14 +1,14 @@
 from lstore.table import Table
 from lstore.bufferpool import BufferPoolManager
 import os, shutil
+import pickle
 
 class Database:
 
     def __init__(self):
         self.tables = {}  # Initialize tables as a dictionary
-        self.path = "./Lineage_DB/"
-        # Initialize bufferpool with 1000 pages
-        self.bufferpool = BufferPoolManager(1000)
+        self.path = None
+        self.bufferpool = None
 
     def open(self, currentpath):
         """
@@ -21,25 +21,24 @@ class Database:
             None
         """
         self.path = currentpath
-        # Clear and reinitialize bufferpool
-        if self.bufferpool:
-            self.bufferpool.clear()
+        # Initialize bufferpool
         self.bufferpool = BufferPoolManager(1000)
         
+        # Create database directory if it doesn't exist
         os.makedirs(self.path, exist_ok=True)
-        for name in os.listdir(self.path):
-            table_path = os.path.join(self.path, name)
-            if os.path.isdir(table_path):
-                # Check if metadata file exists
-                metadata_path = os.path.join(table_path, 'metadata.json')
-                if not os.path.exists(metadata_path):
-                    continue
-                    
-                # Create table with temporary values
-                table = Table(name, 0, 0, self.path, self.bufferpool)
-                # Load actual values from disk
-                table.restart_table()
-                self.tables[name] = table
+        
+        # Try to load existing tables
+        pickle_path = os.path.join(self.path, "tables.pickle")
+        if os.path.exists(pickle_path):
+            try:
+                with open(pickle_path, 'rb') as file:
+                    # Load tables and update their bufferpool reference
+                    self.tables = pickle.load(file)
+                    for table in self.tables.values():
+                        table.bufferpool = self.bufferpool
+            except Exception as e:
+                print(f"Error loading database state: {e}")
+                self.tables = {}
 
     def close(self):
         """
@@ -51,14 +50,43 @@ class Database:
         Returns:
             None
         """
-        for v in self.tables.values():
-            if v.used:
-                v.save()
+        # Save all tables that have been used
+        for table in self.tables.values():
+            if table.used:
+                # Flush all dirty pages for this table
+                for col in range(table.total_columns):
+                    for page_num in table.page_range[col].keys():
+                        page = table.page_range[col][page_num]
+                        if page.is_dirty:
+                            page.flush_to_disk()
         
-        # Flush all dirty pages and clear bufferpool
+        # Save database state using pickle
+        if self.path:
+            try:
+                # Temporarily remove bufferpool reference to avoid pickling it
+                old_bufferpools = {}
+                for table in self.tables.values():
+                    old_bufferpools[table.name] = table.bufferpool
+                    table.bufferpool = None
+                
+                # Save tables state
+                with open(os.path.join(self.path, "tables.pickle"), 'wb') as file:
+                    pickle.dump(self.tables, file)
+                
+                # Restore bufferpool references
+                for table in self.tables.values():
+                    table.bufferpool = old_bufferpools[table.name]
+            except Exception as e:
+                print(f"Error saving database state: {e}")
+                # Restore bufferpool references in case of error
+                for table in self.tables.values():
+                    if table.name in old_bufferpools:
+                        table.bufferpool = old_bufferpools[table.name]
+        
+        # Clear bufferpool
         if self.bufferpool:
-            self.bufferpool.flush_all()
             self.bufferpool.clear()
+            self.bufferpool = None
 
     def create_table(self, name, num_columns, key_index):
         """
@@ -72,6 +100,15 @@ class Database:
         Returns:
             Table: The new table
         """
+        # If database hasn't been opened, initialize with default path
+        if self.path is None:
+            self.path = "ECS165"
+            os.makedirs(self.path, exist_ok=True)
+            
+        # Initialize bufferpool if not already done
+        if self.bufferpool is None:
+            self.bufferpool = BufferPoolManager(1000)
+
         table = self.tables.get(name, None)
 
         if table is None:
