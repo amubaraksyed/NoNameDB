@@ -457,18 +457,19 @@ class Table:
         self.page_directory = [{int(k):[int(v[0]), int(v[1])] 
                               for k,v in col.items()} for col in page_dir]
         
-        # Load page range
+        # Load page range and initialize pages
         page_ranges_data = json.load(open(os.path.join(self.path, 'page_range.json')))
-        self.page_range = [{int(page_num): self._get_page(i, int(page_num)) 
-                           for page_num in page_range_nums} 
-                           for i, page_range_nums in enumerate(page_ranges_data)]
-        
-        # Update last page number
-        for page_range_nums in page_ranges_data:
-            if page_range_nums:  # Check if range is not empty
-                max_page = max(map(int, page_range_nums))
-                if max_page > self.last_page_number:
-                    self.last_page_number = max_page
+        for i, page_range_nums in enumerate(page_ranges_data):
+            for page_num in page_range_nums:
+                page_num = int(page_num)
+                # Create and load the page
+                page = self._get_page(i, page_num)
+                self.page_range[i][page_num] = page
+                # Unpin after loading
+                self.bufferpool.unpin_page(page.path, page_num)
+                # Update last page number
+                if page_num > self.last_page_number:
+                    self.last_page_number = page_num
         
         # Load versions
         versions = json.load(open(os.path.join(self.path, 'versions.json')))
@@ -476,8 +477,19 @@ class Table:
                           for k,v in col.items()} for col in version] 
                         for version in versions]
         
-        # Create index on key column after loading metadata
+        # Rebuild indices
+        self.index = Index(self)
+        # Create index for key column
         self.index.create_index(self.key_col + self.metadata_columns)
+        # Create indices for all data columns
+        for i in range(self.num_columns):
+            col = i + self.metadata_columns
+            self.index.create_index(col)
+            # Rebuild index data from page directory
+            for rid, location in self.page_directory[col].items():
+                value = self.read_value(col, rid)
+                if value is not None:
+                    self.index.add_or_move_record_by_col(col, rid, value)
 
     def merge(self):
         """
