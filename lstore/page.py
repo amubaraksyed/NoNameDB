@@ -6,10 +6,17 @@ class Page:
     Represents a page of data in the database.
     Handles both in-memory and disk operations.
     """
-    def __init__(self, currentpath: str, pagenum: int):
+    def __init__(self, currentpath: str, pagenum: int, col: int = None):
         self.capacity = 4096
         self.page_num = pagenum
-        self.path = os.path.join(currentpath, f"{str(self.page_num)}.bin")
+        self.col = col
+        
+        # Use column-specific path if column is provided
+        if col is not None:
+            self.path = os.path.join(currentpath, "data", f"{col}_{str(self.page_num)}.bin")
+        else:
+            self.path = os.path.join(currentpath, f"{str(self.page_num)}.bin")
+            
         self.data: List[int] = []  # In-memory data
         self.is_dirty = False
         

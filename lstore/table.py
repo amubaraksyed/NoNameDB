@@ -58,7 +58,9 @@ class Table:
         Gets a page from the bufferpool
         """
         page_path = os.path.join(self.path, "data", f"{col}_{page_num}.bin")
-        return self.bufferpool.get_page(page_path, page_num)
+        # Create a new page with the column number
+        page = self.bufferpool.get_page(self.path, page_num, col)
+        return page
 
     def create_meta_data(self):
         """
@@ -481,15 +483,20 @@ class Table:
         self.index = Index(self)
         # Create index for key column
         self.index.create_index(self.key_col + self.metadata_columns)
+        
         # Create indices for all data columns
         for i in range(self.num_columns):
             col = i + self.metadata_columns
             self.index.create_index(col)
             # Rebuild index data from page directory
             for rid, location in self.page_directory[col].items():
-                value = self.read_value(col, rid)
-                if value is not None:
-                    self.index.add_or_move_record_by_col(col, rid, value)
+                try:
+                    value = self.read_value(col, rid)
+                    if value is not None:
+                        self.index.add_or_move_record_by_col(col, rid, value)
+                except Exception as e:
+                    print(f"Warning: Failed to read value for rid {rid} in column {col}: {e}")
+                    continue
 
     def merge(self):
         """
@@ -729,7 +736,7 @@ class Table:
         # Create new pages if needed
         while len(pages_dict[col_index]) <= page_index:
             new_page_num = len(self.page_range[col_index])
-            new_page = Page(new_page_num, os.path.join(self.path, "data", f"{col_index}_{new_page_num}.page"))
+            new_page = Page(new_page_num, os.path.join(self.path, "data", f"{col_index}_{new_page_num}.page"), col_index)
             self.page_range[col_index][new_page_num] = new_page
             pages_dict[col_index].append(new_page_num)
             
