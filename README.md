@@ -12,12 +12,19 @@
 ---
 
 ### Milestone 1
-| Features Implemented:      | |
+|Implemented:      | |
 |----------------------------|-----------------------------|
 | ✅ Query class             | ✅ Transaction class       |
 | ✅ Record class            | ✅ TransactionWorker class |
 | ✅ Table class             | ✅ Page class              |
 | ✅ Database class          | ✅ Index class             |
 
+---
+### Milestone 2
+|Implemented:      | 
+|----------------------------|
+| ✅ Bufferpool           |      
+| ✅ Close/Open           | 
+| ✅ Merge  |
 ---
 
