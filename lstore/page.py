@@ -13,6 +13,7 @@ class Page:
         
         # Use column-specific path if column is provided
         if col is not None:
+            # Ensure we use the table's path for column data
             self.path = os.path.join(currentpath, "data", f"{col}_{str(self.page_num)}.bin")
         else:
             self.path = os.path.join(currentpath, f"{str(self.page_num)}.bin")

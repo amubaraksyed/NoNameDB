@@ -57,9 +57,10 @@ class Table:
         """
         Gets a page from the bufferpool
         """
-        page_path = os.path.join(self.path, "data", f"{col}_{page_num}.bin")
-        # Create a new page with the column number
+        # Get the page from the bufferpool, which will load it from disk if needed
         page = self.bufferpool.get_page(self.path, page_num, col)
+        if page is None:
+            return None
         return page
 
     def create_meta_data(self):
@@ -340,6 +341,9 @@ class Table:
         
         # If this is a data column and we're not in history mode, follow indirection chain
         if col >= self.metadata_columns and not self.is_history:
+            # Keep track of visited RIDs to prevent infinite loops
+            visited_rids = set([current_rid])
+            
             # Follow indirection chain until we reach the latest version
             while True:
                 # Check if current_rid exists in indirection column
@@ -349,11 +353,14 @@ class Table:
                 # Get indirection value
                 ind_details = self.page_directory[INDIRECTION_COLUMN][current_rid]
                 ind_page = self._get_page(INDIRECTION_COLUMN, ind_details[0])
+                if ind_page is None:
+                    break
+                    
                 next_rid = ind_page.read(ind_details[1])
-                self.bufferpool.unpin_page(ind_page.path, ind_page.page_num)
+                self.bufferpool.unpin_page(self.path, ind_page.page_num, INDIRECTION_COLUMN)
                 
-                # If no more updates (indirection is 0), break
-                if next_rid == 0:
+                # If no more updates (indirection is 0) or we've seen this RID before, break
+                if next_rid == 0 or next_rid in visited_rids:
                     break
                     
                 # Check if next_rid exists in the target column
@@ -362,12 +369,16 @@ class Table:
                     
                 # Update current RID and page details
                 current_rid = next_rid
+                visited_rids.add(current_rid)
                 page_details = self.page_directory[col][current_rid]
         
         # Read the value from the final page
         page = self._get_page(col, page_details[0])
+        if page is None:
+            return None
+            
         value = page.read(page_details[1])
-        self.bufferpool.unpin_page(page.path, page.page_num)
+        self.bufferpool.unpin_page(self.path, page.page_num, col)
         return value
 
     def read_page(self, page_num: int, index: int, col: int = None) -> int:
@@ -406,22 +417,37 @@ class Table:
 
     def save(self):
         """
-        Save table metadata
+        Save table metadata and ensure all pages are flushed to disk
         """
+        # First, flush all dirty pages in the bufferpool for this table
+        for col in range(self.total_columns):
+            for page_num in self.page_range[col].keys():
+                page = self.page_range[col][page_num]
+                if page.is_dirty:
+                    page.flush_to_disk()
+                    self.bufferpool.unpin_page(self.path, page_num, col)
+
         # Save the page directory
         with open(os.path.join(self.path, 'page_directory.json'), "w") as file:
-            file.write(json.dumps(self.page_directory))
+            # Convert all keys and values to strings for JSON serialization
+            page_dir_json = [{str(k): [v[0], v[1]] 
+                            for k, v in col.items()} for col in self.page_directory]
+            file.write(json.dumps(page_dir_json))
 
         # Save the page range
         value = []
         for col in self.page_range:
-            value.append(list(col.keys()))
+            value.append([str(k) for k in col.keys()])
         with open(os.path.join(self.path, 'page_range.json'), "w") as file:
             file.write(json.dumps(value))
 
         # Save the versions
         with open(os.path.join(self.path, 'versions.json'), "w") as file:
-            file.write(json.dumps(self.versions))
+            # Convert all keys to strings for JSON serialization
+            versions_json = [[{str(k): [v[0], v[1]] 
+                             for k, v in col.items()} for col in version] 
+                           for version in self.versions]
+            file.write(json.dumps(versions_json))
 
         # Save the metadata
         data = {
@@ -466,12 +492,13 @@ class Table:
                 page_num = int(page_num)
                 # Create and load the page
                 page = self._get_page(i, page_num)
-                self.page_range[i][page_num] = page
-                # Unpin after loading
-                self.bufferpool.unpin_page(page.path, page_num)
-                # Update last page number
-                if page_num > self.last_page_number:
-                    self.last_page_number = page_num
+                if page is not None:
+                    self.page_range[i][page_num] = page
+                    # Unpin after loading
+                    self.bufferpool.unpin_page(self.path, page_num, i)
+                    # Update last page number
+                    if page_num > self.last_page_number:
+                        self.last_page_number = page_num
         
         # Load versions
         versions = json.load(open(os.path.join(self.path, 'versions.json')))
@@ -481,22 +508,9 @@ class Table:
         
         # Rebuild indices
         self.index = Index(self)
-        # Create index for key column
+        # Create index for key column and rebuild it
         self.index.create_index(self.key_col + self.metadata_columns)
-        
-        # Create indices for all data columns
-        for i in range(self.num_columns):
-            col = i + self.metadata_columns
-            self.index.create_index(col)
-            # Rebuild index data from page directory
-            for rid, location in self.page_directory[col].items():
-                try:
-                    value = self.read_value(col, rid)
-                    if value is not None:
-                        self.index.add_or_move_record_by_col(col, rid, value)
-                except Exception as e:
-                    print(f"Warning: Failed to read value for rid {rid} in column {col}: {e}")
-                    continue
+        self.index.restart_index_by_col(self.key_col + self.metadata_columns)
 
     def merge(self):
         """
@@ -741,3 +755,29 @@ class Table:
             pages_dict[col_index].append(new_page_num)
             
         return pages_dict[col_index][page_index]
+
+    def select_version(self, version_num: int):
+        """
+        Select a specific version of the table
+        """
+        if not self.versions:
+            return False
+            
+        # Handle negative version numbers (relative to current)
+        if version_num < 0:
+            version_num = len(self.versions) + version_num
+            
+        # Validate version number
+        if version_num < 0 or version_num >= len(self.versions):
+            return False
+            
+        # Set history mode
+        self.is_history = True
+        
+        # Restore the selected version's page directory
+        self.page_directory = [
+            {k: list(v) for k, v in version_dict.items()}
+            for version_dict in self.versions[version_num]
+        ]
+        
+        return True

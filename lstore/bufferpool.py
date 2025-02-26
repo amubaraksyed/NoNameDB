@@ -44,11 +44,13 @@ class BufferPoolManager:
         # Load page from disk
         page = Page(path, page_num, col)
         
-        # Add to pool
-        self.pages[page_id] = page
-        self.pin_counts[page_id] = 1
-        
-        return page
+        # Add to pool only if page exists or was created successfully
+        if page is not None:
+            self.pages[page_id] = page
+            self.pin_counts[page_id] = 1
+            return page
+            
+        return None
         
     def _evict_page(self) -> bool:
         """
