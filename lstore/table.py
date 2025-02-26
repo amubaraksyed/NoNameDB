@@ -188,21 +188,18 @@ class Table:
         # Store updated values and track schema encoding
         updated_values = []
         for i in range(self.num_columns):
+            # Get the latest value for this column by following indirection chain
+            latest_value = self.read_value(i + self.metadata_columns, rid)
+            
             if columns[i] is not None:
-                old_page_info = self.page_directory[i + self.metadata_columns][rid]
-                old_page = self._get_page(i + self.metadata_columns, old_page_info[0])
-                old_value = old_page.read(old_page_info[1])
-                self.bufferpool.unpin_page(old_page.path, old_page.page_num)
-                
-                if old_value != columns[i]:
+                if latest_value != columns[i]:
                     updated = True
                     schema_encoding |= (1 << i)  # Mark column as updated in schema
                     updated_values.append(columns[i])
                 else:
-                    updated_values.append(old_value)
+                    updated_values.append(latest_value)
             else:
-                # If column not being updated, get current value
-                updated_values.append(self.read_value(i + self.metadata_columns, rid))
+                updated_values.append(latest_value)
         
         if updated:
             # Update schema encoding in metadata
@@ -235,7 +232,7 @@ class Table:
                 # Write metadata
                 if page.write(metadata[i]):
                     self.bufferpool.mark_dirty(page.path, page.page_num)
-                    self.page_directory[i][rid] = [page_num, index]
+                    self.page_directory[i][tail_rid] = [page_num, index]  # Use tail_rid instead of rid
                 
                 self.bufferpool.unpin_page(page.path, page.page_num)
             
@@ -266,17 +263,22 @@ class Table:
                 # Write value and update indices
                 if page.write(updated_values[i]):
                     self.bufferpool.mark_dirty(page.path, page.page_num)
-                    self.index.add_or_move_record_by_col(i + self.metadata_columns, rid, updated_values[i])
-                    self.page_directory[i + self.metadata_columns][rid] = [page_num, index]
+                    # Update index with tail_rid instead of base rid
+                    self.index.add_or_move_record_by_col(i + self.metadata_columns, tail_rid, updated_values[i])
+                    self.page_directory[i + self.metadata_columns][tail_rid] = [page_num, index]  # Use tail_rid instead of rid
                 
                 self.bufferpool.unpin_page(page.path, page.page_num)
             
             # Update indirection pointer of base record
             base_indirection_info = self.page_directory[INDIRECTION_COLUMN][rid]
             base_indirection_page = self._get_page(INDIRECTION_COLUMN, base_indirection_info[0])
-            base_indirection_page.update(base_indirection_info[1], tail_rid)
+            base_indirection_page.update(base_indirection_info[1], tail_rid)  # Use update instead of write
             self.bufferpool.mark_dirty(base_indirection_page.path, base_indirection_page.page_num)
             self.bufferpool.unpin_page(base_indirection_page.path, base_indirection_page.page_num)
+            
+            # Update indices for all columns to point to the latest values
+            for i in range(self.num_columns):
+                self.index.add_or_move_record_by_col(i + self.metadata_columns, rid, updated_values[i])
             
             # Increment update count and check if merge needed
             self.update_count += 1
