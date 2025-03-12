@@ -1,6 +1,6 @@
 from lstore.table import Table, Record
 from lstore.index import Index
-from lstore.lock_manager import LockManager, LockType
+from lstore.lock import LockManager, LockType
 from lstore.logger import Logger
 from typing import Dict, List, Tuple, Any
 
