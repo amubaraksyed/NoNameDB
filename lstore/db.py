@@ -35,7 +35,7 @@ class Database:
                     # Load tables and update their bufferpool reference
                     self.tables = pickle.load(file)
                     for table in self.tables.values():
-                        table.bufferpool = self.bufferpool
+                        table._initialize_after_load(self.bufferpool)
             except Exception as e:
                 print(f"Error loading database state: {e}")
                 self.tables = {}
@@ -43,45 +43,37 @@ class Database:
     def close(self):
         """
         Closes the database and ensures all dirty pages are written to disk
-
-        Args:
-            None
-
-        Returns:
-            None
         """
         # Save all tables that have been used
         for table in self.tables.values():
             if table.used:
+                # Save table state
+                table.save()
+                
                 # Flush all dirty pages for this table
                 for col in range(table.total_columns):
                     for page_num in table.page_range[col].keys():
                         page = table.page_range[col][page_num]
                         if page.is_dirty:
                             page.flush_to_disk()
+                            self.bufferpool.unpin_page(self.path, page_num, col)
         
         # Save database state using pickle
         if self.path:
             try:
-                # Temporarily remove bufferpool reference to avoid pickling it
-                old_bufferpools = {}
+                # Ensure all tables are in a serializable state
                 for table in self.tables.values():
-                    old_bufferpools[table.name] = table.bufferpool
+                    # Clear unpicklable objects
                     table.bufferpool = None
+                    table.version_lock = None
+                    if hasattr(table.index, '_lock'):
+                        table.index._lock = None
                 
                 # Save tables state
                 with open(os.path.join(self.path, "tables.pickle"), 'wb') as file:
                     pickle.dump(self.tables, file)
-                
-                # Restore bufferpool references
-                for table in self.tables.values():
-                    table.bufferpool = old_bufferpools[table.name]
             except Exception as e:
                 print(f"Error saving database state: {e}")
-                # Restore bufferpool references in case of error
-                for table in self.tables.values():
-                    if table.name in old_bufferpools:
-                        table.bufferpool = old_bufferpools[table.name]
         
         # Clear bufferpool
         if self.bufferpool:

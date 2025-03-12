@@ -1,44 +1,56 @@
+from threading import Thread
+from typing import List
 from lstore.table import Table, Record
 from lstore.index import Index
+from lstore.transaction import Transaction
 
 class TransactionWorker:
-
     """
-    # Creates a transaction worker object.
+    Handles concurrent execution of transactions in a separate thread.
     """
-    def __init__(self, transactions = []):
+    def __init__(self, transactions: List[Transaction] = None):
         self.stats = []
-        self.transactions = transactions
+        self.transactions = transactions or []
         self.result = 0
-        pass
+        self._thread = None
 
-    
-    """
-    Appends t to transactions
-    """
-    def add_transaction(self, t):
+    def add_transaction(self, t: Transaction):
+        """
+        Appends transaction to the list of transactions to execute
+        """
         self.transactions.append(t)
 
-        
-    """
-    Runs all transaction as a thread
-    """
     def run(self):
-        pass
-        # here you need to create a thread and call __run
-    
+        """
+        Runs all transactions as a thread
+        """
+        self._thread = Thread(target=self.__run)
+        self._thread.start()
 
-    """
-    Waits for the worker to finish
-    """
     def join(self):
-        pass
-
+        """
+        Waits for the worker to finish
+        """
+        if self._thread:
+            self._thread.join()
 
     def __run(self):
+        """
+        Execute all transactions, retrying aborted ones.
+        """
         for transaction in self.transactions:
-            # each transaction returns True if committed or False if aborted
-            self.stats.append(transaction.run())
-        # stores the number of transactions that committed
-        self.result = len(list(filter(lambda x: x, self.stats)))
+            success = False
+            max_retries = 3  # Limit retries to prevent infinite loops
+            retries = 0
+            
+            while not success and retries < max_retries:
+                success = transaction.run()
+                if not success:
+                    retries += 1
+                    # Could add exponential backoff here
+            
+            self.stats.append(success)
+
+        # Calculate number of successful transactions
+        self.result = len([s for s in self.stats if s])
 
