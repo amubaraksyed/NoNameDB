@@ -336,10 +336,8 @@ def merging_tester():
     records_num = 10000
     sample_count = 200
     select_repeat = 200
-    print("Breakpoint  1")
     for i in range(records_num):
         query.insert(*[i, (i+100)%records_num, (i+200)%records_num, (i+300)%records_num, (i+400)%records_num])
-    print("Breakpoint 2")
     for index in range(len(update_nums)):
         # 10000*4*(5+4*2+3*4+2*8+16*1) = 2280000 Byte = 556 Pages (4KB Page)
         update_num = update_nums[index]
@@ -350,7 +348,6 @@ def merging_tester():
                 for idx in range(index):
                     update_record[4-idx] = None
                 query.update(i, *update_record)
-        print("Breakpoint 3")
         keys = sorted(sample(range(0, records_num),sample_count)) 
         time = 0
         # 200 * 200 select
@@ -358,8 +355,6 @@ def merging_tester():
             time += 1
             for key in keys:
                 query.select(key, 0, [1,1,1,1,1])
-    print("Breakpoint 4")
-
 
     
 from timeit import default_timer as timer
