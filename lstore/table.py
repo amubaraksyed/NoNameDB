@@ -4,6 +4,7 @@ from lstore.page import Page
 from lstore.bufferpool import BufferPoolManager
 import json, os
 from lstore.config import MERGE_TRIGGER_COUNT, INDIRECTION_COLUMN, RID_COLUMN, TIMESTAMP_COLUMN, SCHEMA_ENCODING_COLUMN
+from threading import RLock
 
 class Record:
     def __init__(self, rid: int, key: int, columns: int):
@@ -52,22 +53,47 @@ class Table:
         self.used = False
         self.update_count = 0  # Track number of updates
         self.last_page_number = self.total_columns * 16 + self.total_columns
+        self.version_lock = RLock()  # Add lock for version management
+        self.version_timestamps = []  # Track version timestamps
 
     def __getstate__(self):
         """
         Called when pickling - returns state to be pickled
+        Remove unpicklable objects (bufferpool and locks)
         """
         state = self.__dict__.copy()
-        # Don't pickle the bufferpool
+        # Don't pickle the bufferpool and locks
         state['bufferpool'] = None
+        state['version_lock'] = None
         return state
         
     def __setstate__(self, state):
         """
         Called when unpickling - restores state
+        Reinitialize unpicklable objects
         """
         self.__dict__.update(state)
+        # Reinitialize the lock
+        self.version_lock = RLock()
+        # Ensure index is properly initialized
+        if hasattr(self, 'index') and self.index is not None:
+            self.index._initialize_after_load()
         
+    def _initialize_after_load(self, bufferpool):
+        """
+        Reinitialize necessary objects after loading from disk
+        """
+        self.bufferpool = bufferpool
+        if not hasattr(self, 'version_lock') or self.version_lock is None:
+            self.version_lock = RLock()
+        if not hasattr(self, 'version_timestamps'):
+            self.version_timestamps = []
+        if hasattr(self, 'index') and self.index is not None:
+            self.index._initialize_after_load()
+        else:
+            self.index = Index(self)
+            self.index.create_index(self.key_col)
+
     def _get_page(self, col: int, page_num: int) -> Page:
         """
         Gets a page from the bufferpool
@@ -424,11 +450,44 @@ class Table:
 
     def make_ver_copy(self):
         """
-        Create version snapshot
+        Create version snapshot with thread safety
         """
-        self.versions.append([{k:[v[0], v[1]] 
-                             for k,v in col.items()} 
-                            for col in self.page_directory])
+        with self.version_lock:
+            # Create deep copy of page directory to avoid concurrent modifications
+            version_snapshot = [{k:[v[0], v[1]] for k,v in col.items()} for col in self.page_directory]
+            self.versions.append(version_snapshot)
+            self.version_timestamps.append(time())  # Track version creation time using imported time function
+            
+            # Keep only last 10 versions to prevent memory bloat
+            if len(self.versions) > 10:
+                self.versions.pop(0)
+                self.version_timestamps.pop(0)
+                
+            return len(self.versions) - 1  # Return version number
+
+    def get_version_at_time(self, timestamp):
+        """
+        Get the version that was active at the given timestamp
+        """
+        with self.version_lock:
+            if not self.version_timestamps:
+                return None
+            
+            # Find the latest version that was created before or at the timestamp
+            for i in range(len(self.version_timestamps) - 1, -1, -1):
+                if self.version_timestamps[i] <= timestamp:
+                    return self.versions[i]
+            
+            return self.versions[0] if self.versions else None
+
+    def restore_version(self, version_number):
+        """
+        Restore table state to a specific version
+        """
+        with self.version_lock:
+            if 0 <= version_number < len(self.versions):
+                return self.versions[version_number]
+            return None
 
     def save(self):
         """
@@ -661,7 +720,7 @@ class Table:
         
         # Initialize metadata
         schema_encoding = '0' * self.num_columns
-        timestamp = int(time.time())
+        timestamp = int(time())
         indirection = 0  # No updates yet
         
         # Prepare all values (metadata + data)
@@ -722,7 +781,7 @@ class Table:
         new_schema = int(''.join(new_schema), 2)
         
         # Prepare metadata for tail record
-        timestamp = int(time.time())
+        timestamp = int(time())
         
         # Get current indirection
         ind_details = self.page_directory[INDIRECTION_COLUMN][base_rid]
