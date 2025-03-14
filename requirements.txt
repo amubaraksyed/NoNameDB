@@ -1,1 +1,26 @@
-colorama
+# Core dependencies
+BTrees>=4.9.0  # Required for B-Tree based indexing (used in lstore/index.py)
+colorama>=0.4.6  # Required for colored terminal output in test scripts
+
+# Testing dependencies
+pytest>=7.0.0  # For running unit tests
+pytest-timeout>=2.1.0  # For test timeouts
+pytest-cov>=4.1.0  # For test coverage reporting
+
+# Development dependencies
+black>=23.0.0  # Code formatting
+pylint>=2.17.0  # Code linting
+mypy>=1.0.0  # Static type checking
+
+# Optional dependencies
+tqdm>=4.65.0  # Progress bars for long operations (optional)
+
+# Note: The following Python standard libraries are used but don't need installation:
+# - threading (concurrency)
+# - typing (type hints)
+# - collections (OrderedDict)
+# - enum (LockType)
+# - json (serialization)
+# - os (file operations)
+# - time (timestamps)
+# - pickle (object serialization)
