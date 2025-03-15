@@ -31,24 +31,29 @@ class TransactionWorker:
         """
         Waits for the worker to finish
         """
-        if self._thread:
-            self._thread.join()
+        if self._thread: self._thread.join()
 
     def __run(self):
         """
         Execute all transactions, retrying aborted ones.
         """
+
+        # Iterate through the transactions
         for transaction in self.transactions:
-            success = False
-            max_retries = 3  # Limit retries to prevent infinite loops
-            retries = 0
+
+            # Initialize success and retries
+            success, max_retries, retries = False, 3, 0
             
+            # While the transaction is not successful and the number of retries is less than the maximum number of retries
             while not success and retries < max_retries:
+
+                # Run the transaction
                 success = transaction.run()
-                if not success:
-                    retries += 1
-                    # Could add exponential backoff here
+
+                # If the transaction is not successful, increment the number of retries
+                if not success: retries += 1
             
+            # Append the success status to the stats
             self.stats.append(success)
 
         # Calculate number of successful transactions

@@ -13,37 +13,55 @@ class Query:
         """
         Update the caller and create a version copy of the table if necessary
         """
-        if self.caller != caller:
-            self.caller = caller
-            self.table.make_ver_copy()
+
+        # If the caller is different, update the caller and create a version copy of the table
+        if self.caller != caller: self.caller = caller; self.table.make_ver_copy()
 
     def delete(self, primary_key):
         """
         Delete a record from the table
         """
+
+        # Version the delete operation
         self.version("delete")
+
+        # Delete the record from the table
         self.table.delete(primary_key)
+
+        # Return true
         return True
 
     def insert(self, *columns):
         """
         Insert a new record into the table
         """
+
+        # Version the insert operation
         self.version("insert")
+
+        # Write the record to the table
         self.table.write(columns)
+
+        # Return true
         return True
     
     def select(self, search_key, search_key_index, projected_columns_index):
         """
         Select records from the table
         """
+        
+        # Read records from the table
         records = self.table.read_records(search_key_index, search_key, projected_columns_index)
+
+        # Return records
         return records
 
     def select_version(self, search_key, search_key_index, projected_columns_index, relative_version):
         """
         Select records from a specific version of the table
         """
+
+        # If there are versions and the relative version is not 0
         if self.table.versions and relative_version !=0:
 
             # Set the table to history mode
@@ -63,16 +81,18 @@ class Query:
 
             # Set the table to not in history mode
             self.table.is_history = False
-        else:
-            # If no version is specified, select the records from the current version
-            records = self.table.read_records(search_key_index, search_key, projected_columns_index)
 
+        # If no version is specified, select the records from the current version
+        else: records = self.table.read_records(search_key_index, search_key, projected_columns_index)
+
+        # Return records
         return records
 
     def update(self, primary_key, *columns):
         """
         Update a record in the table
         """
+
         # Update the caller and create a version copy of the table if necessary
         self.version("update")
 
@@ -80,8 +100,7 @@ class Query:
         columns = list(columns)
 
         # If the primary key is not provided, use the primary key from the columns
-        if not columns[self.table.key_col]:
-            columns[self.table.key_col] = primary_key
+        if not columns[self.table.key_col]: columns[self.table.key_col] = primary_key
 
         # Check if the primary key exists in the page directory
         if (not primary_key in self.table.page_directory[self.table.key_col]) or (not columns[self.table.key_col] == primary_key):
@@ -89,12 +108,15 @@ class Query:
         
         # Update the table with the new columns
         self.table.update(columns)
+
+        # Return true
         return True
         
     def sum(self, start_range, end_range, aggregate_column_index):
         """
         Sum the values of a column over a range of records
         """
+
         # Initialize the sum variable
         total = 0
         
@@ -103,13 +125,17 @@ class Query:
         
         # Iterate over the range of records
         for rid in range(start_range, end_range + 1):
+
             # Check if the record exists
             if rid in self.table.page_directory[actual_col]:
+
                 # Read the value using read_value which properly handles version chains
                 value = self.table.read_value(actual_col, rid)
-                if value is not None:
-                    total += value
+
+                # If the value is not None, add it to the total
+                if value is not None: total += value
         
+        # Return the total
         return total
 
     def sum_version(self, start_range, end_range, aggregate_column_index, relative_version):
@@ -120,7 +146,8 @@ class Query:
         sum = self.sum(start_range,end_range,aggregate_column_index)
 
         # If there are versions and the relative version is not 0, sum the values from the specified version
-        if self.table.versions and relative_version!=0:
+        if self.table.versions and relative_version != 0:
+
             # Copy the current page directory to a variable
             current = [{k:[v[0], v[1]] for k,v in col.items()} for col in self.table.page_directory]
 
@@ -146,6 +173,7 @@ class Query:
         """
         Increment the value of a column for a specific record
         """     
+        
         # Select the record with the specified key
         r = self.select(key, self.table.key, [1] * self.table.num_columns)[0]
 

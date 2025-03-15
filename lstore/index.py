@@ -35,8 +35,7 @@ class Index:
         """
         Reinitialize necessary objects after loading from disk
         """
-        if not hasattr(self, '_lock') or self._lock is None:
-            self._lock = RLock()
+        if not hasattr(self, '_lock') or self._lock is None: self._lock = RLock()
 
     def get_value_in_col_by_rid(self, column_number: int, rid: int) -> int:
         """
@@ -52,79 +51,117 @@ class Index:
         Get RIDs by value from BTree. Thread-safe.
         BTrees maintain sorted order, but we still need to scan for matching values
         """
+
+        # Lock the index
         with self._lock:
-            if column_number >= len(self.indices) or self.indices[column_number] is None:
-                return []
+
+            # If index doesn't exist, return empty list
+            if column_number >= len(self.indices) or self.indices[column_number] is None: return []
+
+            # Return RIDs
             return [k for k, v in self.indices[column_number].items() if v == value]
 
     def create_index(self, column_number: int) -> True:
         """
         Create a new BTree index for the column. Thread-safe.
         """
+
+        # Lock the index
         with self._lock:
-            if column_number >= len(self.indices):
-                # Extend indices list if needed
-                self.indices.extend([None] * (column_number - len(self.indices) + 1))
-                
+
+            # Extend indices list if needed
+            if column_number >= len(self.indices): self.indices.extend([None] * (column_number - len(self.indices) + 1))
+
+            # If index doesn't exist, create it
             if self.indices[column_number] is None:
                 self.indices[column_number] = OOBTree()
                 self.restart_index_by_col(column_number)
+
+            # Return True
             return True
     
     def drop_index(self, column_number: int) -> True:
         """
         Drop the BTree index for the column. Thread-safe.
         """
+
+        # Lock the index
         with self._lock:
-            if column_number < len(self.indices):
-                self.indices[column_number] = None
+
+            # If index exists, drop it
+            if column_number < len(self.indices): self.indices[column_number] = None
+
+            # Return True
             return True
 
     def add_or_move_record_by_col(self, column_number: int, rid: int, value: int):
         """
         Add or update a record in the BTree index. Thread-safe.
         """
+
+        # Lock the index
         with self._lock:
-            if column_number >= len(self.indices):
-                # Extend indices list if needed
-                self.indices.extend([None] * (column_number - len(self.indices) + 1))
-                
-            if self.indices[column_number] is None:
-                self.create_index(column_number)
+
+            # Extend indices list if needed
+            if column_number >= len(self.indices): self.indices.extend([None] * (column_number - len(self.indices) + 1))
+
+            # If index doesn't exist, create it
+            if self.indices[column_number] is None: self.create_index(column_number)
+
+            # Add or update record
             self.indices[column_number][rid] = value
 
     def delete_record(self, column_number: int, rid: int) -> bool:
         """
         Delete a record from the BTree index. Thread-safe.
         """
+
+        # Lock the index
         with self._lock:
-            if column_number >= len(self.indices) or self.indices[column_number] is None or rid not in self.indices[column_number]:
-                return False
+
+            # If index doesn't exist, return False
+            if column_number >= len(self.indices) or self.indices[column_number] is None or rid not in self.indices[column_number]: return False
+
+            # Delete record
             del self.indices[column_number][rid]
+
+            # Return True
             return True
             
     def restart_index(self):
         """
         Rebuild all BTree indices. Thread-safe.
-        """
+        """     
+
+        # Lock the index
         with self._lock:
+
             # Initialize indices for total columns (metadata + data)
             self.indices = [None] * self.table.total_columns
+
+            # Initialize indices
             for i in range(self.table.total_columns):
+
+                # If index exists, initialize it
                 if len(self.table.page_directory[i]) > 0:
                     self.indices[i] = OOBTree()
-                    for k, v in self.table.page_directory[i].items():
-                        self.indices[i][k] = self.table.read_page(v[0], v[1])
+
+                    # Add records to index
+                    for k, v in self.table.page_directory[i].items(): self.indices[i][k] = self.table.read_page(v[0], v[1])
             
     def restart_index_by_col(self, col):
         """
         Rebuild BTree index for a specific column. Thread-safe.
         """
+
+        # Lock the index
         with self._lock:
-            if col >= len(self.indices):
-                # Extend indices list if needed
-                self.indices.extend([None] * (col - len(self.indices) + 1))
-                
-            self.indices[col] = OOBTree()
-            for k, v in self.table.page_directory[col].items():
-                self.indices[col][k] = self.table.read_page(v[0], v[1])
+
+            # Extend indices list if needed
+            if col >= len(self.indices): self.indices.extend([None] * (col - len(self.indices) + 1))
+
+            # If index doesn't exist, create it
+            if self.indices[col] is None: self.indices[col] = OOBTree()
+
+            # Add records to index
+            for k, v in self.table.page_directory[col].items(): self.indices[col][k] = self.table.read_page(v[0], v[1])

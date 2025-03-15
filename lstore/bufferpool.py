@@ -10,6 +10,7 @@ class BufferPoolManager:
     Implements LRU replacement policy and handles page pinning/unpinning.
     Thread-safe implementation for concurrent access.
     """
+    
     def __init__(self, pool_size: int):
         self.pool_size = pool_size
         self.pages: OrderedDict[Tuple[str, int, int], Page] = OrderedDict()  # (path, page_num, col) -> Page
@@ -23,6 +24,8 @@ class BufferPoolManager:
         Automatically pins the page. Thread-safe.
         """
         with self._lock:
+
+            # Check if page is already in pool
             page_id = (path, page_num, col)
             
             # If page in pool, move to end (most recently used) and return
@@ -37,13 +40,11 @@ class BufferPoolManager:
                 if not self._evict_page():
                     # If eviction failed, unpin all pages with pin count > 1
                     for pid in self.pin_counts:
-                        if self.pin_counts[pid] > 1:
-                            self.pin_counts[pid] = 1
+                        if self.pin_counts[pid] > 1: self.pin_counts[pid] = 1
                 attempts += 1
                 
             # If still full after attempts, force evict least recently used page
-            if len(self.pages) >= self.pool_size:
-                self._force_evict_page()
+            if len(self.pages) >= self.pool_size: self._force_evict_page()
                 
             # Load page from disk
             page = Page(path, page_num, col)
@@ -53,7 +54,8 @@ class BufferPoolManager:
                 self.pages[page_id] = page
                 self.pin_counts[page_id] = 1
                 return page
-                
+            
+            # If page is not found, return None
             return None
             
     def _evict_page(self) -> bool:
@@ -62,8 +64,13 @@ class BufferPoolManager:
         Returns True if successful, False if no pages can be evicted.
         Must be called with self._lock held.
         """
+
+        # Iterate over pages in reverse order (most recently used first)
         for page_id in list(self.pages.keys()):
+
+            # If page is unpinned, evict it
             if self.pin_counts[page_id] == 0:
+
                 # If dirty, write back to disk
                 if page_id in self.dirty_pages:
                     self.flush_page(page_id[0], page_id[1], page_id[2])
@@ -74,6 +81,7 @@ class BufferPoolManager:
                 self.pin_counts.pop(page_id)
                 return True
                 
+        # If no pages can be evicted, return False
         return False
         
     def _force_evict_page(self) -> None:
@@ -81,8 +89,9 @@ class BufferPoolManager:
         Forces eviction of the least recently used page regardless of pin count.
         Must be called with self._lock held.
         """
-        if not self.pages:
-            return
+
+        # If no pages in pool, return
+        if not self.pages: return
             
         # Get least recently used page
         page_id = next(iter(self.pages))
@@ -100,37 +109,58 @@ class BufferPoolManager:
         """
         Pins a page in memory. Thread-safe.
         """
+
+        # Lock the bufferpool
         with self._lock:
+
+            # Check if page is in pool and pinned
             page_id = (path, page_num, col)
-            if page_id in self.pin_counts:
-                self.pin_counts[page_id] += 1
+            if page_id in self.pin_counts: self.pin_counts[page_id] += 1
                 
     def unpin_page(self, path: str, page_num: int, col: int = None) -> None:
         """
         Unpins a page in memory. Thread-safe.
         """
+
+        # Lock the bufferpool
         with self._lock:
+
+            # Check if page is in pool and pinned
             page_id = (path, page_num, col)
             if page_id in self.pin_counts and self.pin_counts[page_id] > 0:
+
+                # Decrement pin count
                 self.pin_counts[page_id] -= 1
                 
     def mark_dirty(self, path: str, page_num: int, col: int = None) -> None:
         """
         Marks a page as dirty. Thread-safe.
         """
+
+        # Lock the bufferpool
         with self._lock:
+
+            # Add page to dirty pages
             self.dirty_pages.add((path, page_num, col))
         
     def flush_page(self, path: str, page_num: int, col: int = None) -> None:
         """
         Writes a page back to disk. Thread-safe.
         """
+
+        # Lock the bufferpool
         with self._lock:
+
+            # Check if page is in pool
             page_id = (path, page_num, col)
             if page_id in self.pages:
+
+                # Get page
                 page = self.pages[page_id]
+
                 # Ensure directory exists
                 os.makedirs(os.path.dirname(page.path), exist_ok=True)
+
                 # Write page content to disk
                 page.flush_to_disk()
                 
@@ -138,7 +168,11 @@ class BufferPoolManager:
         """
         Writes all dirty pages back to disk. Thread-safe.
         """
+
+        # Lock the bufferpool
         with self._lock:
+
+            # Flush all dirty pages
             for page_id in self.dirty_pages.copy():
                 self.flush_page(page_id[0], page_id[1], page_id[2])
                 self.dirty_pages.remove(page_id)
@@ -147,8 +181,14 @@ class BufferPoolManager:
         """
         Clears the bufferpool after flushing dirty pages. Thread-safe.
         """
+
+        # Lock the bufferpool
         with self._lock:
+
+            # Flush all dirty pages
             self.flush_all()
+
+            # Clear the bufferpool
             self.pages.clear()
             self.pin_counts.clear()
             self.dirty_pages.clear() 
