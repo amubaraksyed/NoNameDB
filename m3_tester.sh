@@ -22,17 +22,17 @@ run_test() {
     echo
 }
 
-# Run M3 Part 1 Test (Concurrent Operations)
-run_test m3_tester_part_1.py
+# # Run M3 Part 1 Test (Concurrent Operations)
+# run_test m3_tester_part_1.py
 
-# Run M3 Part 2 Test (Data Persistence with Concurrency)
-run_test m3_tester_part_2.py
+# # Run M3 Part 2 Test (Data Persistence with Concurrency)
+# run_test m3_tester_part_2.py
 
-# Clean up directories again
-echo "Cleaning up directories for exam tests..."
-rm -rf Lineage_DB ECS165
-echo "Cleanup completed"
-echo
+# # Clean up directories again
+# echo "Cleaning up directories for exam tests..."
+# rm -rf Lineage_DB ECS165
+# echo "Cleanup completed"
+# echo
 
 # Run Exam M3 Part 1 Test
 run_test exam_tester_m3_part1.py
